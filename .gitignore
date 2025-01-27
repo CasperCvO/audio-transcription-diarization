@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# audio
+Audio/*
+.wav
+.m4a
+
+# Transcription
+Transcription/*
+.txt
+
+# specific notebook
+whisper-notebook_T4output.ipynb
+
