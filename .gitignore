@@ -11,13 +11,11 @@ wheels/
 .env
 
 # audio
-Audio/*
-.wav
-.m4a
+*.wav
+*.m4a
 
 # Transcription
-Transcription/*
-.txt
+*.txt
 
 # specific notebook
 whisper-notebook_T4output.ipynb

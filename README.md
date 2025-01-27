@@ -42,25 +42,16 @@ This project provides tools for audio transcription and speaker diarization usin
 
 2. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/your-repo-name.git
-   cd your-repo-name
+   git clone https://github.com/CasperCvO/audio-transcription-diarization.git
+   cd audio-transcription-diarization
    ```
 
-3. Create and activate a virtual environment:
+3. Create and activate venv and install dependencies using UV:
    ```bash
-   uv venv
-   # On Windows
-   .venv\Scripts\activate
-   # On Unix or MacOS
-   source .venv/bin/activate
+   uv sync
    ```
 
-4. Install dependencies using UV:
-   ```bash
-   uv pip install --requirements pyproject.toml
-   ```
-
-5. Set up environment variables:
+4. Set up environment variables:
    Create a `.env` file in the root directory with:
    ```
    HF_TOKEN=your_hugging_face_token
