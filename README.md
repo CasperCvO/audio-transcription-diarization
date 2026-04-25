@@ -1,154 +1,107 @@
-# Audio Transcription and Speaker Diarization
+# meetings
 
-This project provides tools for audio transcription and speaker diarization using Whisper and Pyannote. It includes functionality for basic transcription, audio analysis, and speaker identification in audio files.
+Transcribe, diarize and summarize meeting recordings — Dutch-first.
 
-## Features
+This repo started as a notebook-based Whisper + pyannote experiment and is
+being modernized into a small Python package with two pluggable backends:
 
-- Audio transcription using OpenAI's Whisper
-- Speaker diarization using Pyannote
-- Audio analysis including:
-  - Language detection
-  - Log-mel spectrogram visualization
-  - Audio segment extraction
-- Complete transcription pipeline with speaker identification
+- **Track A** — AssemblyAI Universal-2 (single API: transcribe + diarize + summarize).
+- **Track B** — Custom composition of best-in-class models per stage,
+  optimized for **summary quality** on Dutch meetings.
 
-## Project Structure
+Implementation plan and design notes live in [`plan/`](./plan/README.md).
 
-```
-.
-├── Audio/                     # Directory for input audio files
-├── Transcription/            # Directory for output transcriptions
-├── diarize_transcribe.ipynb  # Notebook for transcription with speaker diarization
-├── check_transcribe.ipynb    # Notebook for audio analysis and transcription
-├── pyproject.toml           # Project dependencies and metadata
-├── uv.lock                  # UV lock file for reproducible builds
-├── .env                     # Environment variables (create this file)
-└── README.md
+## Quick start
+
+Requirements: Python 3.12, [UV](https://github.com/astral-sh/uv), `ffmpeg` on `PATH`.
+
+```bash
+uv sync
+cp .env.example .env   # fill in only the keys you need (see below)
+uv run meetings --help
 ```
 
-## Prerequisites
+Drop a recording into `audio/raw/`, normalize it to canonical 16 kHz mono WAV,
+then run a backend against the processed file:
 
-- Python 3.12
-- FFmpeg (for audio processing)
-- CUDA-capable GPU (recommended for faster processing but works without to)
-- UV package manager
-
-## Installation
-
-1. Install UV (if not already installed):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/CasperCvO/audio-transcription-diarization.git
-   cd audio-transcription-diarization
-   ```
-
-3. Create and activate venv and install dependencies using UV:
-   ```bash
-   uv sync
-   ```
-
-4. Set up environment variables:
-   Create a `.env` file in the root directory with:
-   ```
-   HF_TOKEN=your_hugging_face_token
-   ```
-   Get your Hugging Face token from: https://huggingface.co/settings/tokens
-
-## Usage
-
-### Basic Transcription and Analysis
-
-Use `check_transcribe.ipynb` for:
-- Basic audio transcription
-- Language detection
-- Log-mel spectrogram visualization
-- Audio segment extraction
-
-Example:
-```python
-# Process an audio file
-results = process_audio('Audio/your_audio.wav', 
-                       output_dir='Transcription',
-                       segment=('02:00', '03:00'))  # Optional segment
+```bash
+uv run meetings preprocess audio/raw/your_meeting.m4a
+uv run meetings run --backend assemblyai --audio audio/processed/your_meeting.16k.mono.wav
+uv run meetings run --backend custom     --audio audio/processed/your_meeting.16k.mono.wav
 ```
 
-### Speaker Diarization
+Each run writes its outputs under `Transcription/<run_id>/`:
 
-Use `diarize_transcribe.ipynb` for:
-- Full transcription with speaker identification
-- Timeline-based speaker segmentation
-- Combined transcription and speaker information
+| File | Contents |
+|------|----------|
+| `transcript.json` | Canonical structured transcript (speakers, segments, words). |
+| `transcript.md`   | Human-readable transcript with speakers and timestamps. |
+| `summary.json`    | Structured summary (TL;DR, topics, decisions, actions, …). |
+| `summary.md`      | Human-readable Dutch summary. |
+| `meta.json`       | Run metadata (backend, models, prompt version, timings). |
 
-Example:
-```python
-# Transcribe with speaker diarization
-AUDIO_FILE = "Audio/your_audio.wav"
-result = whisper_model.transcribe(AUDIO_FILE)
-diarization = pipeline(AUDIO_FILE)
+## CLI
+
+| Command | Purpose |
+|---------|---------|
+| `meetings preprocess SRC [--dst-dir DIR] [--overwrite]` | Convert any input to 16 kHz mono PCM WAV (`audio/processed/` by default). |
+| `meetings run --audio FILE [--backend ...] [options]`   | Run a full pipeline (transcribe + diarize + summarize). |
+| `meetings validate RUN_DIR`                              | Re-validate an existing run directory against the current schema. |
+| `meetings compare RUN_A RUN_B`                           | Compare two runs (stub — see `plan/04-evaluation-and-comparison.md`). |
+
+### `run` options
+
+- `--backend` — `assemblyai` (default) or `custom`.
+- `--language` — BCP-47 language code, default `nl`.
+- Custom-backend-only:
+  - `--transcriber` — `whisper-1` (default), `openai_gpt4o`, `elevenlabs`, `deepgram`.
+  - `--diarizer` — `pyannoteai` (default), `pyannote_local`.
+  - `--summarizer` — `claude` (default).
+  - `--name-resolution/--no-name-resolution` — try to map `SPEAKER_XX` to real names via Claude.
+  - `--cleanup/--no-cleanup` — remove intermediate artifacts after a successful run.
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in only what you plan to use:
+
+| Variable | Used by |
+|----------|---------|
+| `ASSEMBLYAI_API_KEY` | Track A (AssemblyAI Universal-2). |
+| `OPENAI_API_KEY`     | Track B transcription (`whisper-1`, `openai_gpt4o`). |
+| `ELEVENLABS_API_KEY` | Track B transcription (`elevenlabs`). |
+| `DEEPGRAM_API_KEY`   | Track B transcription (`deepgram`). |
+| `PYANNOTEAI_API_KEY` | Track B diarization (`pyannoteai`). |
+| `ANTHROPIC_API_KEY`  | Track B summarization (`claude`) and optional name resolution. |
+| `GOOGLE_API_KEY`     | Reserved for alternative summarizers. |
+| `HF_TOKEN`           | Optional local pyannote fallback (`pyannote_local`). |
+
+## Project layout
+
+```
+src/meetings/        # the package (cli, pipelines, transcribe, diarize, summarize, ...)
+plan/                # implementation plan and design notes
+notebooks/legacy/    # original Whisper + pyannote notebooks (reference only)
+audio/raw/           # input recordings — gitignored
+audio/processed/     # canonical 16 kHz mono WAVs from `meetings preprocess` — gitignored
+Transcription/       # run outputs — gitignored
+tests/
 ```
 
-## Input/Output
+## Status
 
-### Input
-- Place your audio files in the `Audio/` directory
-- Supported formats: WAV files (recommended)
-- Other formats may need conversion using FFmpeg
+- [x] Repo modernization scaffold (`plan/03-repo-modernization.md`)
+- [ ] Track A — AssemblyAI implementation (`plan/01-track-a-assemblyai.md`)
+- [ ] Track B — custom pipeline (`plan/02-track-b-custom-pipeline.md`)
+- [ ] Evaluation & comparison (`plan/04-evaluation-and-comparison.md`)
 
-### Output
-Transcriptions and analysis results are saved in the `Transcription/` directory:
-- `transcription.txt`: Raw transcription
-- `transcription_with_speakers.txt`: Transcription with speaker identification
-- Additional analysis files (spectrograms, etc.)
+## Development
 
-## Dependencies
-
-Dependencies are managed using UV and specified in `pyproject.toml`. Key dependencies include:
-- ipykernel
-- ipywidgets
-- llvmlite
-- numba
-- openai-whisper
-- pyannote-audio
-- python-dotenv
-- torch
-- tqdm
-
-For exact versions, refer to `uv.lock` file.
-
-## Models
-
-### Whisper
-Available models at time of writing (see also [Whisper repo](https://github.com/openai/whisper)):
-- tiny.en, tiny
-- base.en, base
-- small.en, small
-- medium.en, medium
-- large-v1, large-v2, large-v3
-- large, large-v3-turbo
-
-Default: `large-v3-turbo` (best balance of speed and accuracy)
-
-### Pyannote
-Using `pyannote/speaker-diarization-3.1` for speaker diarization
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+```bash
+uv run ruff check .
+uv run mypy src
+uv run pytest
+```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details
-
-## Acknowledgments
-
-- [OpenAI Whisper](https://github.com/openai/whisper)
-- [Pyannote Audio](https://github.com/pyannote/pyannote-audio)
-- [UV Package Manager](https://github.com/astral-sh/uv)
+MIT — see `LICENSE`.

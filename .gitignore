@@ -13,9 +13,18 @@ wheels/
 # audio
 *.wav
 *.m4a
+*.mp3
+*.mp4
 
-# Transcription
+# Transcription run outputs
+Transcription/
 *.txt
+!.env.example
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
 
 # specific notebook
 whisper-notebook_T4output.ipynb
