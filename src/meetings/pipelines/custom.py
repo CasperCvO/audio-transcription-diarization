@@ -14,8 +14,10 @@ from pathlib import Path
 from ..align import assign_speakers, group_into_segments
 from ..audio import audio_meta, prepare_audio
 from ..diarize import Diarizer, get_diarizer
-from ..io import new_run_id, write_run
+from ..io import new_run_id, write_meta, write_run, write_transcript
 from ..schema import RunMeta, RunResult, Segment, Transcript
+from ..snippets import extract_speaker_snippets
+from ..speakers import write_skeleton
 from ..summarize import Summarizer, get_summarizer
 from ..summarize.names import apply_name_mapping, resolve_speaker_names
 from ..transcribe import Transcriber, get_transcriber
@@ -108,6 +110,81 @@ class CustomPipeline:
         result = RunResult(transcript=transcript, summary=summary, meta=run_meta)
         write_run(run_dir, result)
         return result
+
+    # ---------------------------------------------------------- transcribe_only
+
+    def transcribe_only(
+        self,
+        audio: Path,
+        run_dir: Path,
+        *,
+        language: str = "nl",
+        snippets_per_speaker: int = 3,
+    ) -> Transcript:
+        """Run prepare → transcribe → diarize → align, write artefacts, return Transcript.
+
+        Writes:
+        - ``transcript.json`` + ``transcript.md`` via :func:`io.write_transcript`
+        - ``speakers.json`` skeleton via :func:`speakers.write_skeleton`
+        - ``snippets/SPEAKER_*.wav`` via :func:`snippets.extract_speaker_snippets`
+        - ``meta.json`` via :func:`io.write_meta`` with ``extra={"stage": "transcribed",
+          "diarizer": <name>, "transcriber": <name>}``
+
+        Does NOT summarize. Returns the Transcript for human-in-the-loop relabelling.
+        """
+        run_dir.mkdir(parents=True, exist_ok=True)
+        timings: dict[str, float] = {}
+
+        with _stage("prepare", timings):
+            processed = prepare_audio(audio)
+            meta = audio_meta(processed)
+
+        with _stage("transcribe", timings):
+            transcript = self._transcriber.transcribe(processed, language=language)
+
+        with _stage("diarize", timings):
+            turns = self._diarizer.diarize(processed)
+
+        with _stage("align", timings):
+            words = [w for seg in transcript.segments for w in seg.words]
+            words_with_speakers = assign_speakers(words, turns)
+            segments = group_into_segments(words_with_speakers)
+            transcript = _replace_segments(transcript, segments, backend=self.name)
+
+        # Write transcript outputs
+        write_transcript(run_dir, transcript)
+
+        # Write speakers.json skeleton
+        write_skeleton(run_dir, transcript)
+
+        # Extract speaker snippets
+        extract_speaker_snippets(
+            transcript, processed, run_dir, top_n=snippets_per_speaker
+        )
+
+        # Write meta.json with stage marker
+        run_meta = RunMeta(
+            run_id=new_run_id(audio, self.name),
+            backend=self.name,
+            input_path=str(audio),
+            input_sha256=meta.sha256,
+            duration=meta.duration,
+            timings=timings,
+            model_versions={
+                "transcriber": getattr(self._transcriber, "model", self._transcriber.name),
+                "diarizer": getattr(self._diarizer, "model", self._diarizer.name),
+            },
+            extra={
+                "stage": "transcribed",
+                "diarizer": self._diarizer.name,
+                "transcriber": self._transcriber.name,
+                "audio_processed": str(processed),
+                "audio_bytes": meta.bytes_,
+            },
+        )
+        write_meta(run_dir, run_meta)
+
+        return transcript
 
 
 # --------------------------------------------------------------- helpers ---
