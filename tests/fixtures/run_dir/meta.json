@@ -1,0 +1,18 @@
+{
+  "run_id": "test_meeting__assemblyai__20240101T120000Z",
+  "backend": "assemblyai",
+  "input_path": "audio/test_sample/test_meeting.wav",
+  "input_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "duration": 120.0,
+  "timings": {
+    "transcribe_s": 15.5
+  },
+  "model_versions": {
+    "assemblyai_speech": "universal"
+  },
+  "extra": {
+    "transcript_id": "test_id_123",
+    "language_code": "nl",
+    "stage": "transcribed"
+  }
+}

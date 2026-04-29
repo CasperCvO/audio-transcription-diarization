@@ -1,0 +1,237 @@
+{
+  "language": "nl",
+  "duration": 120.0,
+  "speakers": [
+    "SPEAKER_00",
+    "SPEAKER_01"
+  ],
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 5.2,
+      "speaker": "SPEAKER_00",
+      "text": "Hallo allemaal, welkom bij deze vergadering.",
+      "words": [
+        {
+          "text": "Hallo",
+          "start": 0.0,
+          "end": 0.4,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.95
+        },
+        {
+          "text": "allemaal,",
+          "start": 0.5,
+          "end": 1.0,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.92
+        },
+        {
+          "text": "welkom",
+          "start": 1.2,
+          "end": 1.6,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.94
+        },
+        {
+          "text": "bij",
+          "start": 1.7,
+          "end": 1.9,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.91
+        },
+        {
+          "text": "deze",
+          "start": 2.0,
+          "end": 2.3,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.93
+        },
+        {
+          "text": "vergadering.",
+          "start": 2.4,
+          "end": 5.2,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.89
+        }
+      ]
+    },
+    {
+      "start": 6.0,
+      "end": 12.5,
+      "speaker": "SPEAKER_01",
+      "text": "Dank je, ik heb de agenda voorbereid met drie belangrijke punten.",
+      "words": [
+        {
+          "text": "Dank",
+          "start": 6.0,
+          "end": 6.3,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.96
+        },
+        {
+          "text": "je,",
+          "start": 6.4,
+          "end": 6.6,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.94
+        },
+        {
+          "text": "ik",
+          "start": 7.0,
+          "end": 7.2,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.95
+        },
+        {
+          "text": "heb",
+          "start": 7.3,
+          "end": 7.5,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.93
+        },
+        {
+          "text": "de",
+          "start": 7.6,
+          "end": 7.8,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.92
+        },
+        {
+          "text": "agenda",
+          "start": 7.9,
+          "end": 8.4,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.94
+        },
+        {
+          "text": "voorbereid",
+          "start": 8.5,
+          "end": 9.2,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.91
+        },
+        {
+          "text": "met",
+          "start": 9.3,
+          "end": 9.5,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.93
+        },
+        {
+          "text": "drie",
+          "start": 9.6,
+          "end": 9.9,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.95
+        },
+        {
+          "text": "belangrijke",
+          "start": 10.0,
+          "end": 10.8,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.90
+        },
+        {
+          "text": "punten.",
+          "start": 10.9,
+          "end": 12.5,
+          "speaker": "SPEAKER_01",
+          "confidence": 0.88
+        }
+      ]
+    },
+    {
+      "start": 13.0,
+      "end": 18.0,
+      "speaker": "SPEAKER_00",
+      "text": "Goed, laten we beginnen met het eerste punt over het budget.",
+      "words": [
+        {
+          "text": "Goed,",
+          "start": 13.0,
+          "end": 13.5,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.94
+        },
+        {
+          "text": "laten",
+          "start": 13.8,
+          "end": 14.1,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.92
+        },
+        {
+          "text": "we",
+          "start": 14.2,
+          "end": 14.4,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.93
+        },
+        {
+          "text": "beginnen",
+          "start": 14.5,
+          "end": 15.0,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.91
+        },
+        {
+          "text": "met",
+          "start": 15.1,
+          "end": 15.3,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.94
+        },
+        {
+          "text": "het",
+          "start": 15.4,
+          "end": 15.6,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.92
+        },
+        {
+          "text": "eerste",
+          "start": 15.7,
+          "end": 16.2,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.93
+        },
+        {
+          "text": "punt",
+          "start": 16.3,
+          "end": 16.7,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.91
+        },
+        {
+          "text": "over",
+          "start": 16.8,
+          "end": 17.1,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.94
+        },
+        {
+          "text": "het",
+          "start": 17.2,
+          "end": 17.4,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.92
+        },
+        {
+          "text": "budget.",
+          "start": 17.5,
+          "end": 18.0,
+          "speaker": "SPEAKER_00",
+          "confidence": 0.89
+        }
+      ]
+    }
+  ],
+  "source_audio": "test_meeting.wav",
+  "backend": "assemblyai",
+  "backend_meta": {
+    "transcript_id": "test_id_123",
+    "audio_url": "https://example.com/audio.wav",
+    "speech_model": "universal"
+  }
+}
