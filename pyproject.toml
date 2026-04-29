@@ -15,7 +15,9 @@ dependencies = [
     "pydub>=0.25.1",
     "openai>=1.54",
     "anthropic>=0.39",
+    "google-genai>=1.0",
     "assemblyai>=0.63.0",
+    "elevenlabs>=1.0",
 ]
 
 [project.scripts]
@@ -40,7 +42,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["notebooks/legacy", ".venv", "Audio", "audio", "Transcription"]
+extend-exclude = ["notebooks", ".venv", "Audio", "audio", "Transcription"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

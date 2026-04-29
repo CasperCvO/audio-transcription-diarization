@@ -20,7 +20,7 @@ def get_transcriber(name: str) -> Transcriber:
         return OpenAITranscriber(model="gpt-4o-transcribe")
     if name in {"whisper-1", "whisper"}:
         return OpenAITranscriber(model="whisper-1")
-    if name == "elevenlabs":
+    if name in {"elevenlabs", "scribe_v2", "scribe"}:
         return ElevenLabsTranscriber()
     if name == "deepgram":
         return DeepgramTranscriber()
