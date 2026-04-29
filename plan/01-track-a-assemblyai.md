@@ -1,136 +1,208 @@
-# 01 — Track A: AssemblyAI Universal-2 PoC
+# 01 — Track A: AssemblyAI + direct Claude/Gemini summarization
 
-**Status:** Implemented (2026-04-25). Live smoke test pending a real sample.
+**Status:** Implemented (2026-04-26). Live smoke test pending a real Dutch sample.
 **Depends on:** `03-repo-modernization.md` (skeleton must exist).
+
+> **2026 context.** Per the Artificial Analysis AA-WER leaderboard, AssemblyAI
+> Universal is no longer the single most accurate ASR (ElevenLabs Scribe v2
+> leads at 2.3 %). Track A remains the **lowest-risk, fully-implemented path**
+> for the 2 h Dutch meeting today, and AssemblyAI's Dutch transcription +
+> diarization is still strong. The relabel UX (`speakers.json` + snippets)
+> introduced here is now reused verbatim by Track B — see
+> `02-track-b-custom-pipeline.md` B12.
 
 ## Objective
 
-Get a working end-to-end Dutch meeting pipeline using **AssemblyAI Universal-2**
-in a single API call: transcription + speaker diarization + summarization +
-chapters. This is the baseline that Track B must beat on summary quality.
+Run a Dutch (or English) meeting through:
 
-## Why AssemblyAI for the baseline
+1. **AssemblyAI Universal-2** for transcription + speaker diarization.
+2. A **manual speaker-relabel step** (human-in-the-loop) using audio
+   snippets per speaker, written to `speakers.json`.
+3. **Direct API summarization** via Claude (Anthropic) or Gemini (Google),
+   selectable at the CLI. **AssemblyAI's LeMUR / LLM Gateway is not used**
+   so this works on AssemblyAI plan tiers without LLM access.
 
-- Universal-2 supports Dutch.
-- Native speaker labels (diarization) per word and per utterance.
-- Native LeMUR / Auto-Chapters / Summarization endpoints — no separate LLM call
-  needed for the baseline.
-- One SDK, one key, no GPU.
+Quality of the summary remains the top priority. Cost matters enough that
+both summarizers default to their provider's **batch API (50% cheaper)**
+with a synchronous escape hatch (`--sync`) for prompt iteration.
 
-## Key finding during implementation
+## Why this shape
 
-**AssemblyAI's `auto_chapters` and `summarization` features are English-only.**
-Enabling them with `language_code="nl"` returns an API error. For Dutch (and any
-other non-English meeting) the structured `Summary` is therefore built
-entirely from a single **LeMUR `task`** call (Claude Sonnet 4). Native chapters
-and `summary` are still used when the caller sets `language="en"`, and their
-output is merged into `Summary.topics` / `Summary.tldr` as a bonus.
+- **Universal-2 for Dutch.** Universal-3 Pro only supports
+  `{en, es, de, fr, pt, it}`. Dutch is in Universal-2's high-accuracy tier.
+  Out of scope for now: dynamically promoting to Universal-3 Pro for
+  English/EU-language meetings.
+- **No LeMUR.** LeMUR routes through AssemblyAI and requires a plan tier
+  the project doesn't have. Calling Anthropic / Google directly side-steps
+  the AssemblyAI plan dependency entirely.
+- **Native `auto_chapters` and `summarization` are not used.** Both are
+  English-only and overlap with the LLM summarization step anyway.
+- **Stage split.** Single-shot pipelines waste LLM tokens when diarization
+  is wrong. Splitting transcribe / relabel / summarize lets the user gate
+  the (paid) summarization on a satisfactory transcript.
+- **Single-call summarization.** Modern Claude Sonnet 4.5 (200k context)
+  and Gemini 2.5 Pro (1M+ context) easily fit multi-hour Dutch meetings.
+  Map-reduce is unnecessary here — that complexity stays in Track B.
+
+## Pipeline shape
+
+Three stages, each writing to `Transcription/<run_id>/`:
+
+| Stage | CLI command | Inputs | Outputs |
+|-------|-------------|--------|---------|
+| 1. Transcribe | `meetings transcribe --audio …` | audio file | `transcript.json/.md`, `speakers.json` skeleton, `snippets/SPEAKER_*.wav`, `meta.json` (`stage="transcribed"`) |
+| 2. Relabel | `meetings relabel <run_dir>` | user-edited `speakers.json` | renamed `transcript.json/.md`, `meta.json` (`stage="relabelled"`) |
+| 3. Summarize | `meetings summarize <run_dir> --summarizer claude\|gemini` | `transcript.json` | `summary.json/.md`, `llm/<provider>.{prompt,response,meta}.{md,json}`, `meta.json` (`stage="summarized"`) |
+
+The legacy `meetings run --backend assemblyai` chains stage 1 + stage 3
+(no manual relabel) for parity with Track B and quick smoke tests.
 
 ## Tasks
 
-### A1. Add dependency and config — done
-- [x] Added `assemblyai==0.63.0` via `uv add assemblyai` (see `pyproject.toml`).
-- [x] `ASSEMBLYAI_API_KEY` already present in `.env.example` and
-      `src/meetings/config.py` (loaded through `pydantic-settings`;
-      `require()` raises a clear error when missing).
-- [x] Fetched authoritative SDK docs via `chub get assemblyai/transcription`
-      (JS-only variant; Python SDK mirrors the same parameter names —
-      verified interactively with `inspect.signature` on `TranscriptionConfig`
-      and `aai.Lemur.task`).
+### A1. Dependencies and config — done
+- [x] `assemblyai>=0.63.0` (existing).
+- [x] `anthropic>=0.39` (existing) — used directly via `client.messages.batches.create`.
+- [x] `google-genai>=1.0` (added) — used directly via `client.batches.create`.
+- [x] `ASSEMBLYAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` in
+      `Settings` (`src/meetings/config.py`); `require()` raises a clear
+      error when a key needed at call time is missing.
 
-### A2. Implement `pipelines/assemblyai.py` — done
-- [x] Class `AssemblyAIPipeline` (duck-types `MeetingPipeline`), `name = "assemblyai"`.
-- [x] `run(audio_path, run_dir, *, language="nl")` performs:
-  1. Reads `ASSEMBLYAI_API_KEY` via `config.get_settings()` / `require()` and sets
-     `aai.settings.api_key`.
-  2. Builds `aai.TranscriptionConfig` with:
-     - `speech_model=aai.SpeechModel.universal`.
-     - `language_code=<language>` (default `"nl"`).
-     - `speaker_labels=True`, `punctuate=True`, `format_text=True`.
-     - `auto_chapters`, `summarization`, `summary_model=conversational`,
-       `summary_type=bullets_verbose` — **only when `language` is English**
-       (gated via `is_english = language.lower().startswith("en")`).
-  3. `aai.Transcriber(config=config).transcribe(str(audio_path))` — the SDK
-     uploads the local file and polls to completion internally. Errors are
-     surfaced via `transcript.status == TranscriptStatus.error`.
-  4. `_to_canonical_transcript()` maps `utterances` → `Segment`s and
-     `utterance.words` → `Word`s. Speaker labels are normalised to
-     `SPEAKER_<X>` and collected in `Transcript.speakers` in first-appearance
-     order. Millisecond timestamps are converted to seconds.
-  5. `_summarize_with_lemur()` builds the canonical `Summary` (see A3). When
-     `is_english` and the native chapters/summary are populated, they enrich
-     `summary.topics` / `summary.tldr` as a fallback.
+### A2. AssemblyAI transcription + diarization — done
+- [x] `pipelines/assemblyai.py::AssemblyAIPipeline.transcribe(audio_path, run_dir, *, language="nl", snippets_per_speaker=3)`:
+  - `aai.TranscriptionConfig(speech_model=universal, language_code=language, speaker_labels=True, punctuate=True, format_text=True)`.
+  - **Native `auto_chapters` and `summarization` are not enabled** —
+    they are English-only and superseded by the LLM step.
+  - Maps `utterances` → `Segment`s, `utterance.words` → `Word`s; speaker
+    labels normalised to `SPEAKER_<X>`.
+  - Writes `transcript.json/.md` and a `speakers.json` skeleton via
+    `speakers.write_skeleton`.
+  - Writes per-speaker audio snippets via `snippets.extract_speaker_snippets`
+    (top-N longest segments per speaker, 4–20 s, re-encoded with ffmpeg
+    to 16 kHz mono PCM). Snippet failures are non-fatal; an
+    `EXTRACTION_FAILED.txt` marker is written instead.
+  - `meta.json.extra` carries `transcript_id`, `language_code`, and
+    `stage="transcribed"`.
 
-### A3. Structured summary via LeMUR — done
-- [x] Calls `transcript.lemur.task(prompt=..., final_model=claude_sonnet_4_20250514,
-      temperature=0.0, max_output_size=4000)` with a strict Dutch (or English)
-      JSON prompt covering `title`, `tldr`, `topics`, `decisions`,
-      `action_items (task, owner, due)`, `open_questions`, `next_steps`.
-- [x] Robust JSON extraction (`_extract_json`) tolerates fenced blocks and
-      surrounding prose; on complete parse failure the pipeline still produces
-      output files with a sentinel title + empty lists rather than crashing.
-- [x] Raw LeMUR response (including `request_id`) is persisted in
-      `meta.json` under `extra.lemur_raw`.
-- **Scope change vs. original plan:** LeMUR now produces the *whole* summary
-  for Dutch meetings (tldr + topics + decisions + actions + questions +
-  next_steps), because AssemblyAI's native summarization does not support
-  Dutch. This matches the project's top priority (summary quality).
+### A3. Manual speaker relabel — done
+- [x] `speakers.py` provides `write_skeleton`, `read_mapping`,
+      `validate_mapping(transcript, *, require_all_named)`,
+      `apply_mapping(transcript, mapping)`.
+- [x] `apply_mapping` rewrites speaker labels at both the **segment** and
+      **word** level and rebuilds `Transcript.speakers` in first-appearance
+      order. `null` mapping values keep the original `SPEAKER_X` label.
+- [x] `pipelines/assemblyai.py::AssemblyAIPipeline.relabel(run_dir, *, require_all_named=True)`
+      validates the user-edited file, applies the mapping, and overwrites
+      `transcript.json/.md`. The mapping is recorded in `meta.extra.speaker_mapping`
+      for auditing.
+- [x] CLI flag `--allow-unset` allows partial mappings; default is strict.
 
-### A4. Speaker name resolution (optional) — deferred
-- [ ] Not implemented yet. Plan remains valid: after a real Dutch recording
-      confirms baseline quality, add a small LeMUR pass over the first
-      ~3 minutes to resolve `SPEAKER_A → "Casper"` etc. and rewrite
-      `Transcript.segments[*].speaker` + `Word.speaker` in place.
+### A4. Single-call summarization (Claude or Gemini) — done
+
+Quality and cost defaults:
+
+- Default model — Anthropic: `claude-sonnet-4-5-20250929`, Gemini: `gemini-2.5-pro`.
+- Default mode: **batch** (50 % cheaper, ≤ 24 h SLO; usually < 1 h).
+- `--sync` falls back to the standard messages / generate_content call
+  for live prompt iteration (full price, immediate response).
+
+Implementation:
+
+- [x] `summarize/anthropic_batch.py::AnthropicSummarizer`
+  - **Batch path**: `client.messages.batches.create(...)` →
+    poll `client.messages.batches.retrieve(id).processing_status == "ended"` →
+    stream results via `client.messages.batches.results(id)`.
+  - **Sync path**: `client.messages.create(...)`.
+  - Fed the diarized transcript rendered as
+    `[mm:ss] SPEAKER: text` (current labels — i.e. real names if relabelled).
+- [x] `summarize/gemini_batch.py::GeminiSummarizer`
+  - **Batch path**: `client.batches.create(model=..., src=[InlinedRequestDict])`
+    → poll `client.batches.get(name=...).state.name in {"JOB_STATE_SUCCEEDED", ...}`
+    → read `dest.inlined_responses[0].response.text`.
+  - **Sync path**: `client.models.generate_content(...)`.
+  - `response_mime_type="application/json"` is set on the config to nudge
+    Gemini towards parseable JSON; tolerant `parse_json` cleans up fences.
+- [x] Both share the prompt in `summarize/prompts.py::SINGLE_CALL_PROMPT_{NL,EN}`,
+      version `single-call-v1` (recorded in `Summary.prompt_version` and
+      `meta.json`).
+- [x] Both produce the canonical `Summary` via `summarize/_utils.py::parse_summary_payload`.
+- [x] All prompts and raw responses logged under
+      `Transcription/<run_id>/llm/{anthropic,gemini}.{prompt,response,meta}.{md,json}`.
 
 ### A5. Outputs — done
-- [x] `io.write_run(run_dir, result)` writes `transcript.json`,
-      `transcript.md`, `summary.json`, `summary.md`, `meta.json`.
-- [x] `render_transcript_md` emits `[mm:ss → mm:ss] Speaker: text` blocks.
-- [x] `render_summary_md` uses Dutch headers (*Samenvatting*, *Onderwerpen*,
-      *Beslissingen*, *Actiepunten*, *Open vragen*, *Volgende stappen*) when
-      `summary.language` starts with `nl`; English headers otherwise.
+- [x] Per-stage helpers in `io.py`: `write_transcript`, `write_summary`,
+      `write_meta`, `read_transcript`, `read_meta`. `read_run` still works
+      for fully-completed runs (Track B and `meetings run`).
 
 ### A6. CLI wiring — done
-- [x] `uv run meetings run --backend assemblyai --audio <path> [--language nl]`.
-- [x] Default `--backend assemblyai`, default `--language nl`. CLI prints the
-      `run_dir` on completion and a `Done.` banner.
+- [x] `meetings transcribe --audio <path> [--language nl] [--snippets 3]` — Stage 1.
+- [x] `meetings relabel <run_dir> [--allow-unset]` — Stage 2.
+- [x] `meetings summarize <run_dir> [--summarizer claude|gemini] [--sync] [--language ...]` — Stage 3.
+- [x] `meetings run --backend assemblyai --audio <path> [--summarizer claude|gemini] [--sync]`
+      — chained convenience (no relabel pause).
+- [x] `meetings validate <run_dir>` recognises **partial** runs (transcribed
+      but not yet summarized) and reports the stage from `meta.extra.stage`.
 
-### A7. Smoke test — done (sample audio pending)
-- [x] `tests/test_assemblyai_pipeline.py` contains:
-  - Pure-function unit tests for `_extract_json`, `_parse_action_items`,
-    `_parse_decisions` (always run; no network).
-  - `test_assemblyai_pipeline_smoke`: live end-to-end test that asserts
-    non-empty `Transcript.segments`, ≥ 1 speaker, ≥ 1 `Summary.tldr` bullet,
-    and presence of all five output files. Auto-skips when
-    `ASSEMBLYAI_API_KEY` is missing **or** when no sample audio is found.
-- [ ] Drop a 30–60 s Dutch sample at `audio/test_sample/sample_nl_short.wav`
-      (gitignored) to enable the live run. Alternative accepted locations:
-      `audio/raw/sample_nl_short.wav`,
-      `audio/processed/sample_nl_short.16k.mono.wav`.
+### A7. Tests — done (live smoke pending sample)
+- [x] `tests/test_assemblyai_pipeline.py` covers, without any network:
+  - `summarize._utils`: `parse_json`, `parse_action_items`, `parse_decisions`,
+    `parse_summary_payload`, `render_transcript_for_llm`.
+  - `speakers`: `apply_mapping` rewrites segments **and** words; `null`
+    values keep original labels; `validate_mapping` enforces strict /
+    lax modes; missing labels raise.
+- [x] Live smoke test renamed to `test_assemblyai_transcribe_smoke`. It
+      now exercises **only stage 1** (no LLM call) so it does not require
+      `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`.
+- [ ] Drop a 30–60 s Dutch sample at
+      `audio/test_sample/sample_nl_short.wav` (gitignored) to enable the
+      live run. Alternative locations are also accepted (see test file).
+      The repo currently ships three ~5 min samples in `audio/test_sample/`
+      (`segment_1_start.wav`, `segment_2_45min.wav`, `segment_3_90min.wav`)
+      — either reuse one of those or trim to 30–60 s for the smoke test.
 
 ## Acceptance criteria
 
-- [x] One command produces all five output files for a real Dutch meeting.
-      (Verified structurally; awaits first real-meeting run.)
-- [x] `transcript.json` validates against the Pydantic schema
-      (`tests/test_schema_roundtrip.py` + runtime `model_dump_json`).
-- [x] `summary.md` is in Dutch, well-formatted, and contains action items with
-      owners where available (driven by the LeMUR JSON → `Summary` mapping
-      and `io.render_summary_md`).
-- [x] No API keys committed — all keys read from `.env` via `pydantic-settings`.
+- [x] One human-in-the-loop pipeline produces all five output files for a
+      real Dutch meeting via three explicit commands. (Verified
+      structurally; awaits first real-meeting run.)
+- [x] `transcript.json` validates against the Pydantic schema (covered by
+      `tests/test_schema_roundtrip.py` + runtime `model_dump_json`).
+- [x] `summary.md` is in Dutch, well-formatted, and contains action items
+      with owners that use **the relabelled speaker names** (because the
+      summarizer reads the post-relabel transcript directly via the
+      provider API).
+- [x] No API keys committed — keys read from `.env` via `pydantic-settings`.
 
 ## How to run
 
 ```powershell
-# 0. Ensure ASSEMBLYAI_API_KEY is set in .env (see .env.example).
+# 0. Ensure ASSEMBLYAI_API_KEY + (ANTHROPIC_API_KEY OR GOOGLE_API_KEY) are
+#    set in .env (see .env.example).
 
-# 1. (Optional but recommended) preprocess the recording per plan 05.
-ffmpeg -y -i "audio/raw/<name>.m4a" -ac 1 -ar 16000 -c:a pcm_s16le `
-  "audio/processed/<name>.16k.mono.wav"
+# 1. (Recommended) preprocess to canonical 16 kHz mono WAV (plan 05).
+uv run meetings preprocess "audio/raw/<name>.m4a"
 
-# 2. Run the pipeline.
+# 2. Stage 1 — transcribe + diarize, generate speakers.json + snippets.
+uv run meetings transcribe --audio "audio/processed/<name>.16k.mono.wav" --language nl
+
+# 3. Listen to Transcription/<run_id>/snippets/SPEAKER_*.wav and edit
+#    Transcription/<run_id>/speakers.json:
+#    {"SPEAKER_A": "Casper", "SPEAKER_B": "Anna"}
+
+# 4. Stage 2 — apply the mapping.
+uv run meetings relabel "Transcription/<run_id>"
+
+# 5. Stage 3 — summarize. Defaults: --summarizer claude --batch.
+uv run meetings summarize "Transcription/<run_id>"            # Claude, batch
+uv run meetings summarize "Transcription/<run_id>" --summarizer gemini  # Gemini, batch
+uv run meetings summarize "Transcription/<run_id>" --sync     # Sync iteration
+```
+
+For a no-pause smoke test (skips relabel; uses generic SPEAKER_X labels):
+
+```powershell
 uv run meetings run --backend assemblyai `
-  --audio "audio/processed/<name>.16k.mono.wav" --language nl
+  --audio "audio/processed/<name>.16k.mono.wav" --language nl `
+  --summarizer claude
 ```
 
 Outputs land in `Transcription/<audio-stem>__assemblyai__<utc-timestamp>/`.
@@ -139,14 +211,22 @@ Outputs land in `Transcription/<audio-stem>__assemblyai__<utc-timestamp>/`.
 
 ```powershell
 uv run ruff check src tests     # clean
-uv run mypy src                 # clean (assemblyai import-untyped is ignored)
-uv run pytest -q                # 11 passed, 1 skipped (live smoke until sample is added)
+uv run mypy src                 # strict, clean (30 source files)
+uv run pytest -q                # 30 passed, 1 skipped (live smoke until sample is dropped)
 ```
 
 ## Follow-ups
 
-- Drop the 30–60 s Dutch sample to unlock the live smoke test.
-- Implement A4 (speaker name resolution) once baseline output is reviewed on a
-  real meeting.
-- Consider a `meetings preprocess` sub-command wrapping the ffmpeg step from
-  `plan/05-audio-preprocessing.md` so Track A can take raw inputs directly.
+- Drop the 30–60 s Dutch sample to unlock the live transcribe smoke test.
+- Add a thin live integration test for the summarize stage that mocks
+  the Anthropic / Google SDKs end-to-end (avoids hitting the real batch
+  API in CI).
+- Once the user confirms the human-in-the-loop loop on a real meeting,
+  consider adding optional **dynamic Universal-3 Pro selection** for
+  English / Spanish / French / German / Portuguese / Italian recordings.
+- **2026 follow-up:** the staged commands (`transcribe`, `relabel`,
+  `summarize`) become backend-agnostic per `03-repo-modernization.md`
+  S3 — Track A's pipeline only changes by accepting the new `--backend`
+  flag on `transcribe` (defaulting to `assemblyai` for backwards compat).
+- The notebook UX for stepping through snippets + writing `speakers.json`
+  is now described in `06-testing-and-comparison-notebooks.md`.

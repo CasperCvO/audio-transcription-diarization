@@ -3,9 +3,12 @@
 **Depends on:** `03-repo-modernization.md`. Independent of Track A but reuses
 the canonical schema from `00-architecture.md`.
 
-**Status:** *implemented* (April 2026). The pipeline runs end-to-end via
-`meetings run --backend custom`. See [Implementation status](#implementation-status)
-at the bottom for the per-task checklist, file map, and known deviations.
+**Status:** *partially implemented* (April 2026). The pipeline runs end-to-end
+via `meetings run --backend custom` with OpenAI ASR + pyannoteAI + Claude.
+The **2026 refresh** — Scribe v2 default, transcribe-only CLI, and shared
+relabel UX — is tracked below as tasks B10–B13. See
+[Implementation status](#implementation-status) for the per-task checklist,
+file map, and known deviations.
 
 ## Objective
 
@@ -14,18 +17,46 @@ Compose **separate best-in-class models** for each stage to maximize
 a learning project — the agent should make the seams obvious so individual
 stages can be swapped without touching the rest.
 
-## Stage choices (defaults)
+### 2026 reality check (why the defaults are changing)
+
+The original Track B thesis (compose Whisper + pyannote + Claude) was written
+before the 2025/2026 ASR step-change. Per the **Artificial Analysis AA-WER
+leaderboard** (late 2026, https://artificialanalysis.ai/speech-to-text):
+
+1. **ElevenLabs Scribe v2 — 2.3 %** (best). 90+ languages incl. Dutch, native
+   diarization (up to 32 speakers), word-level timestamps, single-upload
+   long-file handling, key-term prompting.
+2. Gemini 3 Pro (High) — 2.9 %. Up to ~8 h audio per request via the Gemini API.
+3. Voxtral Small (Mistral) — 2.9 %. Open weights.
+4. Gemini 3.1 Pro Preview — 2.9 %.
+5. MAI-Transcribe-1 (Azure) — 3.0 %.
+
+OpenAI Whisper / `gpt-4o-transcribe` no longer rank in the top tier **and**
+still cap uploads at 25 MB, which makes any 2 h meeting a chunking exercise.
+The new Track B default ASR is therefore **ElevenLabs Scribe v2**; OpenAI is
+demoted to short-files only (≤ ~30 min at 16 kHz mono).
+
+The "best-of-breed" thesis narrows but does not disappear: **pyannoteAI
+Precision-2** still beats Scribe v2's built-in diarization on real-world
+meeting audio with overlap (vendor-reported ~28 % DER improvement vs
+open-source SOTA). So Track B's strongest 2026 composition is
+**Scribe v2 (ASR) + pyannoteAI Precision-2 (diarization) + Claude/Gemini
+(summary)**. A simpler "Scribe-only" composition (Scribe v2 emits both ASR
+and diarization) is the documented alternative — A/B them on the test
+samples before committing to the 2 h run.
+
+## Stage choices (defaults — 2026 refresh)
 
 The defaults below are starting points. Each module must be swappable.
 
 | Stage | Default | Reason | Alt to try |
 |-------|---------|--------|------------|
 | Audio prep | `ffmpeg` to 16 kHz mono `pcm_s16le` WAV (no loudnorm — see plan 05) | Predictable input, no DSP that hurts WER | — |
-| Transcription | **OpenAI `whisper-1`** (`verbose_json` + `timestamp_granularities=["word","segment"]`) | Only OpenAI model that emits **word-level** timestamps required for diarization alignment | `gpt-4o-transcribe` (better Dutch text, no word timestamps — falls back to proportional synthesis); ElevenLabs Scribe v1; Deepgram Nova-3 |
-| Diarization | **pyannoteAI Premium API** (`precision-2` model) | SOTA diarization, no GPU needed | Local `pyannote/speaker-diarization-3.1` (CPU-slow) |
+| Transcription | **ElevenLabs Scribe v2** (`scribe_v2`) | Top of the AA-WER leaderboard (2.3 %); native word-level timestamps + diarization; **single upload, no chunking** for the 2 h meeting | Gemini 3 Pro audio (reuses `GOOGLE_API_KEY`, ~8 h per request); OpenAI `whisper-1` / `gpt-4o-transcribe` (≤ 25 MB only — short files); Deepgram Nova-3 |
+| Diarization | **pyannoteAI Premium API** (`precision-2` model) | SOTA diarization, no GPU needed, ~28 % DER edge over open-source SOTA on overlap-heavy audio | Scribe v2 built-in diarization (one less vendor; competitive on clean 2-speaker audio); local `pyannote/speaker-diarization-3.1` (CPU-slow) |
 | Word-speaker alignment | Custom `align.py` | Combine word timestamps + diarization turns | — |
 | Transcript cleanup (optional) | Claude Sonnet 4.5 lightweight pass | Fix Dutch punctuation, remove fillers, keep timestamps | Skip for purity |
-| Summarization | **Claude Sonnet 4.5** (`claude-sonnet-4-5-20250929`) with map-reduce + critique | Strongest long-context structured Dutch output | GPT-5 / Gemini 2.5 Pro (factory hooks ready, not yet implemented) |
+| Summarization | **Claude Sonnet 4.5** (`claude-sonnet-4-5-20250929`) with map-reduce + critique | Strongest long-context structured Dutch output | Gemini 2.5 Pro / Gemini 3 Pro (single-call, factory hook to add) |
 
 > Before coding any stage, fetch live API docs:
 > `chub search "<provider>"` then `chub get <id> --lang py`.
@@ -44,7 +75,33 @@ The defaults below are starting points. Each module must be swappable.
       and AGC because real-world ASR models degrade on pre-processed audio.
       The implementation follows plan 05.
 
-### B2. Transcription module (`transcribe/openai_gpt4o.py`)
+### B2. Transcription module — **default changed to Scribe v2 (2026)**
+
+#### B2a. `transcribe/elevenlabs_scribe.py` — new default *(completed)*
+- [x] Replace the current stub with a working `ElevenLabsTranscriber`
+      (`name="elevenlabs"`, `model="scribe_v2"`).
+- [x] Use the official `elevenlabs` Python SDK; auth via `ELEVENLABS_API_KEY`
+      from `Settings`. Add `elevenlabs>=1.0` to `pyproject.toml`.
+- [x] Single-shot upload of the canonical 16 kHz mono WAV. Request
+      `diarize=True`, `timestamps_granularity="word"`, `language_code=language`.
+- [x] Map Scribe's response → canonical `Transcript`:
+      - `words[]` → `Word(text, start, end, speaker, confidence)`.
+      - Speaker labels normalised to `SPEAKER_<N>` (in first-appearance order).
+      - Group words into `Segment`s on speaker change + sentence-final
+        punctuation + `silence_gap > 0.7 s` (reuse `align.group_into_segments`).
+      - `Transcript.backend_meta` records `model="scribe_v2"`,
+        `had_word_timestamps=True`, `diarization_source="elevenlabs_builtin"`.
+- [x] When the user selects `--diarizer pyannoteai` (default), Scribe's
+      built-in speaker labels are **discarded** and re-assigned via
+      `align.assign_speakers` against the pyannoteAI turns. This keeps the
+      "best-of-breed" composition. Record `diarization_source="pyannoteai"`
+      in `backend_meta` in that case.
+- [x] Tests in `tests/test_elevenlabs_scribe.py`: response-shape parsing
+      (using a fixture JSON, no network), speaker label normalisation, and
+      segment grouping correctness. Live smoke skipped when
+      `ELEVENLABS_API_KEY` is absent.
+
+#### B2b. `transcribe/openai_gpt4o.py` — demoted to short-files-only
 - [x] Class `OpenAITranscriber` exposing
       `transcribe(audio, *, language="nl") -> Transcript` with word-level
       timestamps populated.
@@ -54,16 +111,33 @@ The defaults below are starting points. Each module must be swappable.
 - [x] Fallback: when the selected model omits `words` (e.g.
       `gpt-4o-transcribe`), per-segment text is split into tokens and word
       timestamps are synthesized by proportional alignment weighted by token
-      length. The fallback path is documented inline and exercised by the
-      `had_word_timestamps` flag in `Transcript.backend_meta`.
-- [x] `Transcriber` Protocol in `transcribe/base.py`; factory
-      `get_transcriber(name)` accepts `openai_gpt4o`/`whisper-1`/`elevenlabs`/`deepgram`.
-- [x] Stubs `ElevenLabsTranscriber` and `DeepgramTranscriber` raise
-      `NotImplementedError` until wired.
-- [ ] **Not yet implemented:** silence-based chunking for long files
-      (>~25 MB OpenAI upload limit). Tracked as a follow-up; the OpenAI SDK
-      currently accepts files up to 25 MB which covers most ≤30 min meetings
-      at 16 kHz mono.
+      length.
+- [ ] Add an explicit pre-flight size check: if the input WAV is > 24 MB,
+      raise a clear `TranscribeError` pointing at `--transcriber elevenlabs`
+      / `--transcriber gemini_audio` instead of silently failing on the
+      OpenAI 25 MB upload limit.
+- [ ] **Silence-based chunking for long files is dropped from the roadmap.**
+      In 2026 the long-file path goes through Scribe v2 / Gemini 3 Pro /
+      AssemblyAI — all single-upload — so chunking + boundary-word
+      reconciliation is no longer worth implementing here.
+
+#### B2c. `transcribe/gemini_audio.py` — new alternative *(task, optional)*
+- [ ] New module `GeminiAudioTranscriber` (`name="gemini_audio"`,
+      `model="gemini-3-pro"`). Reuses the existing `google-genai` SDK and
+      `GOOGLE_API_KEY` already in `Settings`.
+- [ ] Upload via `client.files.upload(...)` then
+      `client.models.generate_content(...)` with a structured-output prompt
+      that returns JSON with words + word timestamps + speaker labels.
+- [ ] Verify Dutch quality + timestamp granularity on a 5-min sample
+      *before* trusting it on the 2 h run. Treat as alternative, not default.
+
+#### B2d. `transcribe/__init__.py` — factory + protocol
+- [x] `Transcriber` Protocol in `transcribe/base.py`.
+- [x] Update `get_transcriber(name)` so the **default name is `elevenlabs`
+      / `scribe_v2`** and OpenAI options are still selectable.
+      Accepts: `elevenlabs` (default) | `scribe_v2` | `scribe` | `gemini_audio` | `whisper-1` |
+      `openai_gpt4o` | `deepgram` (stub).
+- [x] Stubs `DeepgramTranscriber` raise `NotImplementedError` until wired.
 
 ### B3. Diarization module (`diarize/pyannoteai_api.py`)
 - [x] `PyannoteAIDiarizer` implements the full pyannoteAI v1 flow:
@@ -90,7 +164,12 @@ The defaults below are starting points. Each module must be swappable.
       mid-sentence, tiny words inside long turns, sentence-punctuation splits,
       and empty-input handling.
 
-### B5. Speaker naming (optional)
+### B5. Speaker naming
+
+**2026 update:** the manual snippet + `speakers.json` UX from Track A is now
+the canonical relabel flow for Track B as well (see B12). The auto-resolve
+path below is kept as a convenience for unattended runs.
+
 - [x] `summarize/names.resolve_speaker_names(transcript, window_seconds=300)`
       sends the first ~5 min to Claude and parses a JSON mapping.
 - [x] `apply_name_mapping(transcript, mapping)` immutably rewrites speaker
@@ -147,6 +226,12 @@ Implementation status:
       `RunMeta.timings` keyed by stage name.
 - [x] `Transcript.backend` is set to `custom:<asr>+<diar>+<sum>` so a run is
       self-describing.
+- [x] **2026:** add a `transcribe_only(audio, run_dir, *, language)` entry
+      point that runs prepare → transcribe → diarize → align and writes
+      `transcript.json/.md`, `speakers.json` skeleton, and per-speaker audio
+      snippets, then **stops** (no summarize). Mirrors
+      `AssemblyAIPipeline.transcribe`. Unlocks the human-in-the-loop relabel
+      flow for Track B (B12) and the long-file CLI run from B11.
 - [ ] **Not yet wired:** the optional transcript-cleanup stage from the
       stage-choices table. Constructor arg `cleanup` is accepted but unused —
       add a `Cleaner` Protocol and stage when desired.
@@ -154,14 +239,21 @@ Implementation status:
 ### B8. CLI wiring
 - [x] `meetings run --backend custom --audio audio/processed/foo.wav` uses defaults.
 - [x] Flags:
-      `--transcriber {openai_gpt4o,whisper-1,elevenlabs,deepgram}` (default `whisper-1`),
+      `--transcriber {openai_gpt4o,whisper-1,elevenlabs,deepgram}`,
       `--diarizer {pyannoteai,pyannote_local}` (default `pyannoteai`),
       `--summarizer {claude}` (default `claude`),
       `--cleanup/--no-cleanup`,
       `--name-resolution/--no-name-resolution`.
+- [x] **2026 update:** flip the `--transcriber` default to `elevenlabs`
+      (Scribe v2) and add `gemini_audio` as a documented choice.
 - [x] Bonus: `meetings preprocess SRC` wraps `prepare_audio` per plan 05.
-- ⚠️ `--summarizer openai` and `--summarizer gemini` are not implemented yet;
-      `get_summarizer` raises `ValueError` for unknown names.
+- [ ] `--summarizer gemini` for Track B: add a thin wrapper around
+      `summarize/gemini_batch.py` (single-call, already used by Track A) so
+      the custom pipeline can also be summarized with Gemini for A/B testing
+      against Claude's map-reduce. Updates `get_summarizer` to dispatch
+      `claude` → map-reduce, `gemini` → single-call batch.
+- ⚠️ `--summarizer openai` is still not implemented; `get_summarizer` raises
+      `ValueError` for unknown names.
 
 ### B9. Tests
 - [x] Unit tests for `align.py` in `tests/test_align.py` and
@@ -173,10 +265,79 @@ Implementation status:
       (no API keys required). Verifies all 5 output files, schema round-trip,
       speaker assignment via diarization, backend label, and that timings are
       recorded for every stage.
+- [x] `tests/test_elevenlabs_scribe.py` — fixture-based parsing of a Scribe v2
+      response into `Transcript`, plus speaker normalisation and segment
+      grouping. Live smoke skipped without `ELEVENLABS_API_KEY`.
+- [ ] `tests/test_custom_transcribe_only.py` — exercise the new
+      `transcribe_only` entry point with fake stages; assert that
+      `transcript.json`, `speakers.json`, and `snippets/SPEAKER_*.wav` exist
+      and that **no** `summary.json` is written.
 - [ ] **Live integration test** on the same short Dutch sample as Track A:
       not yet added. Reuse Track A's smoke-test pattern: skip when
-      `OPENAI_API_KEY` / `PYANNOTEAI_API_KEY` / `ANTHROPIC_API_KEY` are
+      `ELEVENLABS_API_KEY` / `PYANNOTEAI_API_KEY` / `ANTHROPIC_API_KEY` are
       absent.
+
+### B10. Long-file readiness — the 2 h Dutch meeting *(task)*
+
+Goal: run the full 2 h recording through Track B from the CLI without
+babysitting a notebook kernel and without manual chunking.
+
+- [ ] Confirm the canonical input (`audio/processed/<name>.16k.mono.wav`,
+      ~230 MB at 2 h) goes through Scribe v2 in a **single upload**. Document
+      the upper bound observed in `backend_meta`.
+- [ ] If pyannoteAI is selected as the diarizer, confirm the pre-signed PUT
+      flow handles the same file size (it should — pyannoteAI v1 is built on
+      object-storage uploads).
+- [ ] Add a wall-clock budget assertion in the CLI (`--max-stage-seconds`)
+      so a runaway transcribe / diarize job aborts cleanly instead of
+      hanging the terminal.
+- [ ] Acceptance: `meetings transcribe --backend custom --audio
+      audio/processed/<2h-meeting>.16k.mono.wav` produces
+      `transcript.json/.md`, `speakers.json` skeleton, and
+      `snippets/SPEAKER_*.wav` in one shot.
+
+### B11. CLI symmetry: `meetings transcribe --backend custom` *(completed)*
+
+Today `meetings transcribe` is hard-wired to AssemblyAI (Track A stage 1).
+Make it backend-aware so Track B has the same human-in-the-loop entry point.
+
+- [x] Add `--backend {assemblyai|custom}` to `meetings transcribe`
+      (default `assemblyai` for backwards compat).
+- [x] When `--backend custom`, dispatch to
+      `CustomPipeline.transcribe_only(...)` from B7.
+- [x] Forward the relevant flags: `--transcriber`, `--diarizer`, `--language`,
+      `--snippets`. Reject Track-A-only flags with a clear error.
+- [x] Update `cli.py` help text to document the new shape.
+
+### B12. Shared relabel UX *(task)*
+
+Reuse Track A's snippets + `speakers.json` workflow for Track B verbatim.
+
+- [x] Generalise `snippets.extract_speaker_snippets(transcript, audio,
+      run_dir, ...)` to accept any `Transcript` (it already does — confirm).
+- [x] Have `CustomPipeline.transcribe_only` write the `speakers.json`
+      skeleton via `speakers.write_skeleton` and the per-speaker WAVs via
+      `snippets.extract_speaker_snippets`, identical to Track A.
+- [x] `meetings relabel <run_dir>` is **already** backend-agnostic (it only
+      reads `transcript.json` + `speakers.json`). Verify with a Track-B run
+      and add a regression test (`tests/test_relabel_custom.py`).
+- [ ] Keep the existing `--name-resolution` auto-resolve flag as an
+      unattended alternative; document in the README that the manual flow is
+      now the recommended path for both tracks.
+
+### B13. Track-B summarize via Gemini *(task)*
+
+Make `--summarizer gemini` work for Track B too, so Claude vs Gemini can be
+A/B-tested inside the custom pipeline (not only across tracks).
+
+- [x] Extend `summarize/__init__.py::get_summarizer` to return
+      `GeminiSummarizer` (single-call batch, reuses `gemini_batch.py`) when
+      `name == "gemini"`.
+- [x] Document: Track B with Claude uses **map-reduce + critique**; Track B
+      with Gemini uses **single-call** (Gemini 2.5 Pro / 3 Pro have enough
+      context for a 2 h transcript in one pass — same rationale as Track A).
+- [x] Test: `tests/test_custom_summarizer_gemini.py` — full run with a fake
+      `GeminiSummarizer`, asserting `Summary.summarizer_backend.startswith("gemini")`.
 
 ## Acceptance criteria
 
@@ -191,6 +352,11 @@ Implementation status:
       keys; see B9 follow-up).
 - [x] All LLM prompts and responses are logged under
       `Transcription/<run_id>/llm/` for inspection.
+- [ ] **2026 acceptance:** `meetings transcribe --backend custom --audio
+      <2h>.wav` followed by manual `speakers.json` editing, then
+      `meetings relabel <run_dir>` and `meetings summarize <run_dir>
+      --summarizer {claude|gemini}` produces the same five output files for
+      a real Dutch 2 h meeting using **Scribe v2 + pyannoteAI + Claude/Gemini**.
 
 ## Implementation status
 
@@ -219,29 +385,32 @@ Implementation status:
 
 ### Required API keys (in `.env`)
 
-- `OPENAI_API_KEY` — transcription.
-- `PYANNOTEAI_API_KEY` — diarization (Premium API).
-- `ANTHROPIC_API_KEY` — summarization and optional speaker-name resolution.
+- **`ELEVENLABS_API_KEY`** — transcription (default, Scribe v2).
+- `OPENAI_API_KEY` — transcription (only when `--transcriber whisper-1`/`openai_gpt4o`, ≤ 25 MB).
+- `GOOGLE_API_KEY` — transcription (`--transcriber gemini_audio`) **and** summarization (`--summarizer gemini`).
+- `PYANNOTEAI_API_KEY` — diarization (Premium API, default).
+- `ANTHROPIC_API_KEY` — summarization (default Claude) and optional speaker-name auto-resolution.
 - `HF_TOKEN` — only when `--diarizer pyannote_local` is selected.
 
 ### Known deviations from this plan
 
 1. **No loudnorm in audio prep.** Plan 05 supersedes the original B1 wording.
-2. **Default ASR is `whisper-1`, not `gpt-4o-transcribe`.** Word timestamps
-   are required by alignment; only `whisper-1` returns them natively in the
-   OpenAI Audio API today. `gpt-4o-transcribe` is still available via
-   `--transcriber openai_gpt4o` and falls back to proportional word synthesis.
+2. **Implemented default ASR is currently `whisper-1`.** The 2026 refresh
+   (B2a) flips the default to `elevenlabs` / Scribe v2; until that ships,
+   anything > ~25 MB needs `--transcriber elevenlabs` once it's wired.
 3. **Critique applies only additive patches.** Field corrections are logged
    for review but not auto-applied. Tighten this in `_apply_critique` if you
    want stricter behaviour.
 4. **No structured-output / tool-use** on Anthropic calls yet — a tolerant
    JSON parser (`summarize/_utils.parse_json`) handles fenced / prose-wrapped
    responses. Migrating is a low-risk follow-up.
-5. **`--summarizer openai` and `--summarizer gemini` are placeholders** in
-   the plan; only `claude` is implemented. The factory raises a clear error
-   for unknown names.
-6. **No long-file silence-chunking** in the OpenAI transcriber yet; meetings
-   above ~25 MB at 16 kHz mono need to be sliced manually until this lands.
+5. **`--summarizer openai` is a placeholder.** `--summarizer gemini` is wired
+   for Track A today and added for Track B in B13. The factory raises a
+   clear error for other unknown names.
+6. **OpenAI silence-chunking dropped from the roadmap.** With Scribe v2 /
+   Gemini 3 Pro / AssemblyAI all handling the full 2 h file in a single
+   upload, implementing chunking is no longer worth the boundary-error cost.
+   OpenAI ASR stays available for ≤ ~30 min recordings only.
 7. **`--cleanup` flag is accepted but unused.** Add a `Cleaner` Protocol and
    wire a stage when there's evidence cleanup actually improves Dutch summary
    quality on this dataset.
