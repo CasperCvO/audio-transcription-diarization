@@ -92,6 +92,77 @@ Geef **uitsluitend** een JSON-object terug met dit schema:
 "action_items[2].owner"). Laat lijsten leeg als er niets aan te merken is.
 """
 
+# --------------------------------------------------------------------------- #
+# Single-call summarization prompts (Track A: AssemblyAI + Claude/Gemini batch)
+# --------------------------------------------------------------------------- #
+#
+# Used by `summarize.anthropic_batch` and `summarize.gemini_batch` for a
+# one-shot meeting summary on transcripts that fit in the model's context.
+# Modern Sonnet 4.5 (200k) and Gemini 2.5 Pro (>=1M) handle multi-hour
+# meetings comfortably, so map-reduce is unnecessary on Track A.
+
+SINGLE_CALL_PROMPT_VERSION = "single-call-v1"
+
+SINGLE_CALL_PROMPT_NL = """\
+Je bent een notulist die een Nederlandse vergadering samenvat.
+
+Hieronder volgt het volledige gediariseerde transcript. Geef een \
+gestructureerde samenvatting in het Nederlands. Antwoord met UITSLUITEND \
+geldige JSON, zonder uitleg en zonder markdown-fences. Het JSON-object \
+volgt exact dit schema:
+
+{
+  "title": "korte titel van de vergadering",
+  "tldr": ["3 tot 5 bullets met de kern van de vergadering"],
+  "topics": [
+    {"title": "onderwerp", "bullets": ["belangrijkste punten over dit onderwerp"]}
+  ],
+  "decisions": [
+    {"text": "wat is besloten"}
+  ],
+  "action_items": [
+    {"task": "concrete actie", "owner": "naam of null", "due": "datum/termijn of null"}
+  ],
+  "open_questions": ["nog openstaande vragen"],
+  "next_steps": ["geplande vervolgstappen"]
+}
+
+Vereisten:
+- tldr: 3 tot 5 korte bullets.
+- Verzin niets dat niet uit de transcriptie blijkt; laat een lijst leeg als
+  de inhoud ontbreekt.
+- Houd Nederlandse termen en eigennamen exact aan zoals in het transcript.
+- Gebruik de exacte spreker-namen uit het transcript voor `owner`.
+"""
+
+SINGLE_CALL_PROMPT_EN = """\
+You are taking minutes for a meeting. The full diarized transcript is below.
+
+Reply with ONLY valid JSON, no prose, no markdown fences. JSON schema:
+
+{
+  "title": "short meeting title",
+  "tldr": ["3 to 5 bullets capturing the essence"],
+  "topics": [{"title": "topic", "bullets": ["key points"]}],
+  "decisions": [{"text": "what was decided"}],
+  "action_items": [{"task": "...", "owner": "name or null", "due": "date/term or null"}],
+  "open_questions": ["..."],
+  "next_steps": ["..."]
+}
+
+Do not invent content not present in the transcript. Leave lists empty when
+appropriate. Use the exact speaker names from the transcript for `owner`.
+"""
+
+
+def single_call_prompt(language: str) -> str:
+    return (
+        SINGLE_CALL_PROMPT_NL
+        if language.lower().startswith("nl")
+        else SINGLE_CALL_PROMPT_EN
+    )
+
+
 NAME_RESOLUTION_PROMPT_NL = """\
 Hieronder volgt het begin van een vergadertranscript (eerste paar minuten). \
 Probeer voor elke speaker-label (bijv. SPEAKER_00) de echte naam te \

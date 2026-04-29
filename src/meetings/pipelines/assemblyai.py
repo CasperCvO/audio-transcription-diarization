@@ -1,120 +1,118 @@
-"""Track A: AssemblyAI Universal-2 pipeline.
+"""Track A: AssemblyAI transcription + diarization, summarization via direct
+provider APIs (Anthropic Claude or Google Gemini), batch by default.
 
-End-to-end Dutch (or English) meeting pipeline using a single AssemblyAI
-transcription call for transcription + speaker diarization, plus a LeMUR
-``task`` call for the structured summary (decisions, action items, etc.).
+This pipeline is split into three stages so the user can review and
+relabel speakers before paying for a summary:
 
-Notes on AssemblyAI feature compatibility:
-- Native ``auto_chapters`` and ``summarization`` are English-only on
-  AssemblyAI's API. They are enabled automatically when ``language == "en"``
-  and skipped otherwise; LeMUR (Claude) handles the structured Summary in
-  every supported language including Dutch.
+1. :meth:`AssemblyAIPipeline.transcribe` — uploads audio to AssemblyAI,
+   gets back a diarized transcript using the Universal-2 speech model.
+   Writes ``transcript.json``/``transcript.md`` plus a ``speakers.json``
+   skeleton and per-speaker audio snippets under ``snippets/``.
+
+2. :meth:`AssemblyAIPipeline.relabel` — reads the user-edited
+   ``speakers.json`` and rewrites the transcript with real names.
+
+3. :meth:`AssemblyAIPipeline.summarize` — feeds the (renamed) transcript
+   to Claude or Gemini through their batch APIs (50% cost) and writes
+   ``summary.json``/``summary.md``. AssemblyAI's LeMUR is **no longer
+   used**; the summarization is now an Anthropic / Google API call so it
+   can run on tiers without LeMUR / LLM Gateway access.
+
+The convenience :meth:`AssemblyAIPipeline.run` chains all three stages
+without any human-in-the-loop pause, for backward compatibility with the
+``meetings run`` CLI command.
+
+Notes on AssemblyAI feature usage:
+- Speech model is fixed to **Universal-2** (``aai.SpeechModel.universal``)
+  because the Dutch primary language is not supported by Universal-3 Pro.
+- Native ``auto_chapters`` and ``summarization`` are English-only and
+  therefore disabled — we no longer rely on them.
 """
 
 from __future__ import annotations
 
-import json
-import re
 import time
 from pathlib import Path
-from typing import Any
 
 import assemblyai as aai  # type: ignore[import-untyped]
 
 from ..config import get_settings, require
-from ..io import sha256_of, write_run
-from ..schema import (
-    ActionItem,
-    Decision,
-    RunMeta,
-    RunResult,
-    Segment,
-    Summary,
-    Topic,
-    Transcript,
-    Word,
+from ..io import (
+    read_meta,
+    read_transcript,
+    sha256_of,
+    write_meta,
+    write_summary,
+    write_transcript,
 )
+from ..schema import RunMeta, RunResult, Segment, Summary, Transcript, Word
+from ..snippets import extract_speaker_snippets
+from ..speakers import (
+    SpeakerMappingError,
+    apply_mapping,
+    read_mapping,
+    validate_mapping,
+    write_skeleton,
+)
+from ..summarize.anthropic_batch import AnthropicSummarizer
+from ..summarize.base import Summarizer
+from ..summarize.gemini_batch import GeminiSummarizer
 
-PROMPT_VERSION = "assemblyai-lemur-v1"
-
-DEFAULT_LEMUR_MODEL: str = aai.LemurModel.claude_sonnet_4_20250514
 DEFAULT_SPEECH_MODEL: aai.SpeechModel = aai.SpeechModel.universal
 
 
-_LEMUR_PROMPT_NL = """Je bent een notulist die een Nederlandse vergadering samenvat.
+def _track_a_summarizer(name: str, *, batch: bool = True) -> Summarizer:
+    """Track-A-specific summarizer resolution.
 
-Geef een gestructureerde samenvatting in het Nederlands. Antwoord met
-UITSLUITEND geldige JSON, zonder uitleg en zonder markdown-fences. Het
-JSON-object volgt exact dit schema:
-
-{
-  "title": "korte titel van de vergadering",
-  "tldr": ["3 tot 5 bullets met de kern van de vergadering"],
-  "topics": [
-    {"title": "onderwerp", "bullets": ["belangrijkste punten over dit onderwerp"]}
-  ],
-  "decisions": [
-    {"text": "wat is besloten"}
-  ],
-  "action_items": [
-    {"task": "concrete actie", "owner": "naam of null", "due": "datum/termijn of null"}
-  ],
-  "open_questions": ["nog openstaande vragen"],
-  "next_steps": ["geplande vervolgstappen"]
-}
-
-Vereisten:
-- tldr: 3 tot 5 korte bullets.
-- Verzin niets dat niet uit de transcriptie blijkt; laat een lijst leeg als
-  de inhoud ontbreekt.
-- Houd Nederlandse termen en eigennamen exact aan.
-"""
-
-_LEMUR_PROMPT_EN = """You are taking minutes for a meeting.
-
-Reply with ONLY valid JSON, no prose, no markdown fences. JSON schema:
-
-{
-  "title": "short meeting title",
-  "tldr": ["3 to 5 bullets capturing the essence"],
-  "topics": [{"title": "topic", "bullets": ["key points"]}],
-  "decisions": [{"text": "what was decided"}],
-  "action_items": [{"task": "...", "owner": "name or null", "due": "date/term or null"}],
-  "open_questions": ["..."],
-  "next_steps": ["..."]
-}
-
-Do not invent content not present in the transcript. Leave lists empty when
-appropriate.
-"""
+    ``claude``/``anthropic`` -> single-call Claude (Message Batches API).
+    ``gemini``/``google`` -> single-call Gemini (Batch API).
+    """
+    key = name.lower()
+    if key in {"claude", "anthropic", "claude-sonnet"}:
+        return AnthropicSummarizer(batch=batch)
+    if key in {"gemini", "google"}:
+        return GeminiSummarizer(batch=batch)
+    raise ValueError(
+        f"Unknown Track A summarizer: {name!r}. Choose 'claude' or 'gemini'."
+    )
 
 
 class AssemblyAIPipeline:
-    """Pipeline that runs Track A: a single AssemblyAI call + LeMUR summary."""
+    """Pipeline that runs Track A as three explicit stages."""
 
     name = "assemblyai"
 
     def __init__(
         self,
         speech_model: aai.SpeechModel = DEFAULT_SPEECH_MODEL,
-        lemur_model: str = DEFAULT_LEMUR_MODEL,
     ) -> None:
         self.speech_model = speech_model
-        self.lemur_model = lemur_model
 
-    def run(
+    # ------------------------------------------------------------------ #
+    # Stage 1: transcribe
+    # ------------------------------------------------------------------ #
+
+    def transcribe(
         self,
         audio_path: Path,
         run_dir: Path,
         *,
         language: str = "nl",
-    ) -> RunResult:
+        snippets_per_speaker: int = 3,
+    ) -> Transcript:
+        """Run AssemblyAI transcription + diarization and write artefacts.
+
+        Outputs in ``run_dir``:
+        - ``transcript.json``, ``transcript.md`` — the raw diarized transcript.
+        - ``speakers.json`` — a ``{label: null}`` skeleton for the user to fill in.
+        - ``snippets/SPEAKER_*.wav`` — short audio clips per speaker.
+        - ``meta.json`` — run metadata, no summary yet.
+        """
         settings = get_settings()
         api_key = require(settings.assemblyai_api_key, "ASSEMBLYAI_API_KEY")
         aai.settings.api_key = api_key
 
-        timings: dict[str, float] = {}
-        is_english = language.lower().startswith("en")
+        run_dir.mkdir(parents=True, exist_ok=True)
 
         config = aai.TranscriptionConfig(
             speech_model=self.speech_model,
@@ -122,82 +120,163 @@ class AssemblyAIPipeline:
             speaker_labels=True,
             punctuate=True,
             format_text=True,
-            auto_chapters=is_english,
-            summarization=is_english,
-            summary_model=(
-                aai.types.SummarizationModel.conversational if is_english else None
-            ),
-            summary_type=(
-                aai.types.SummarizationType.bullets_verbose if is_english else None
-            ),
         )
 
         t0 = time.perf_counter()
         transcript = aai.Transcriber(config=config).transcribe(str(audio_path))
-        timings["transcribe_s"] = time.perf_counter() - t0
+        transcribe_seconds = time.perf_counter() - t0
 
         if transcript.status == aai.TranscriptStatus.error:
             raise RuntimeError(
                 f"AssemblyAI transcription failed: {transcript.error}"
             )
 
-        canonical_transcript = _to_canonical_transcript(
-            transcript, source_audio=str(audio_path), language=language
+        canonical = _to_canonical_transcript(
+            transcript,
+            source_audio=str(audio_path),
+            language=language,
+            speech_model=str(self.speech_model),
         )
 
-        t1 = time.perf_counter()
-        lemur_raw, summary = _summarize_with_lemur(
-            transcript, language=language, model=self.lemur_model
-        )
-        timings["lemur_s"] = time.perf_counter() - t1
+        write_transcript(run_dir, canonical)
+        write_skeleton(run_dir, canonical)
 
-        # Enrich tldr/topics from native AssemblyAI summary/chapters when
-        # available (English only).
-        if is_english and getattr(transcript, "summary", None) and not summary.tldr:
-            summary.tldr = [
-                line.lstrip("-•* ").strip()
-                for line in str(transcript.summary).splitlines()
-                if line.strip()
-            ][:5]
-
-        if is_english and getattr(transcript, "chapters", None) and not summary.topics:
-            summary.topics = [
-                Topic(
-                    title=(c.headline or c.gist or "Chapter"),
-                    bullets=[
-                        b.strip()
-                        for b in (c.summary or "").split(". ")
-                        if b.strip()
-                    ],
-                    segment_range=(_ms_to_s(c.start), _ms_to_s(c.end)),
-                )
-                for c in transcript.chapters
-            ]
+        # Best-effort snippet extraction; not fatal if ffmpeg is missing.
+        try:
+            extract_speaker_snippets(
+                canonical,
+                audio_path,
+                run_dir,
+                top_n=snippets_per_speaker,
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user, not fatal.
+            (run_dir / "snippets" / "EXTRACTION_FAILED.txt").parent.mkdir(
+                parents=True, exist_ok=True
+            )
+            (run_dir / "snippets" / "EXTRACTION_FAILED.txt").write_text(
+                f"Snippet extraction failed: {exc}\n", encoding="utf-8"
+            )
 
         meta = RunMeta(
             run_id=run_dir.name,
             backend=self.name,
             input_path=str(audio_path),
             input_sha256=sha256_of(audio_path),
-            duration=canonical_transcript.duration,
-            timings=timings,
-            model_versions={
-                "assemblyai_speech": str(self.speech_model),
-                "lemur": str(self.lemur_model),
-            },
-            prompt_version=PROMPT_VERSION,
+            duration=canonical.duration,
+            timings={"transcribe_s": transcribe_seconds},
+            model_versions={"assemblyai_speech": str(self.speech_model)},
             extra={
                 "transcript_id": transcript.id,
                 "language_code": language,
-                "lemur_raw": lemur_raw,
+                "stage": "transcribed",
             },
         )
+        write_meta(run_dir, meta)
+        return canonical
 
-        result = RunResult(
-            transcript=canonical_transcript, summary=summary, meta=meta
+    # ------------------------------------------------------------------ #
+    # Stage 2: relabel
+    # ------------------------------------------------------------------ #
+
+    def relabel(self, run_dir: Path, *, require_all_named: bool = True) -> Transcript:
+        """Apply the user-edited ``speakers.json`` to the saved transcript.
+
+        Overwrites ``transcript.json``/``transcript.md`` with the renamed
+        version. Updates ``meta.extra`` with the mapping for auditing.
+        """
+        transcript = read_transcript(run_dir)
+        mapping = read_mapping(run_dir)
+        validate_mapping(
+            mapping, transcript, require_all_named=require_all_named
         )
-        write_run(run_dir, result)
-        return result
+        renamed = apply_mapping(transcript, mapping)
+        write_transcript(run_dir, renamed)
+
+        meta = read_meta(run_dir)
+        meta_extra = dict(meta.extra)
+        meta_extra["speaker_mapping"] = {k: v for k, v in mapping.items()}
+        meta_extra["stage"] = "relabelled"
+        meta = meta.model_copy(update={"extra": meta_extra})
+        write_meta(run_dir, meta)
+        return renamed
+
+    # ------------------------------------------------------------------ #
+    # Stage 3: summarize
+    # ------------------------------------------------------------------ #
+
+    def summarize(
+        self,
+        run_dir: Path,
+        *,
+        summarizer: str | Summarizer = "claude",
+        batch: bool = True,
+        language: str | None = None,
+    ) -> Summary:
+        """Summarize the (relabelled) transcript via Claude or Gemini.
+
+        Writes ``summary.json``/``summary.md`` and updates ``meta.json``
+        with summarizer info, prompt version, and timings.
+        """
+        transcript = read_transcript(run_dir)
+        meta = read_meta(run_dir)
+        lang = language or str(meta.extra.get("language_code") or transcript.language)
+
+        impl = (
+            _track_a_summarizer(summarizer, batch=batch)
+            if isinstance(summarizer, str)
+            else summarizer
+        )
+
+        log_dir = run_dir / "llm"
+        t0 = time.perf_counter()
+        summary = impl.summarize(transcript, log_dir=log_dir, language=lang)
+        summarize_seconds = time.perf_counter() - t0
+
+        write_summary(run_dir, summary)
+
+        timings = dict(meta.timings)
+        timings["summarize_s"] = summarize_seconds
+        model_versions = dict(meta.model_versions)
+        model_versions["summarizer"] = summary.summarizer_backend
+        meta_extra = dict(meta.extra)
+        meta_extra["stage"] = "summarized"
+        meta = meta.model_copy(
+            update={
+                "timings": timings,
+                "model_versions": model_versions,
+                "prompt_version": summary.prompt_version,
+                "extra": meta_extra,
+            }
+        )
+        write_meta(run_dir, meta)
+        return summary
+
+    # ------------------------------------------------------------------ #
+    # Convenience: chain all three stages (no human-in-the-loop pause)
+    # ------------------------------------------------------------------ #
+
+    def run(
+        self,
+        audio_path: Path,
+        run_dir: Path,
+        *,
+        language: str = "nl",
+        summarizer: str | Summarizer = "claude",
+        batch: bool = True,
+    ) -> RunResult:
+        """Run all three stages back-to-back.
+
+        Skips relabelling because no ``speakers.json`` has been edited
+        yet — generic ``SPEAKER_A/B/C`` labels are passed through to the
+        summarizer. For human-in-the-loop usage prefer the staged CLI
+        commands ``meetings transcribe`` / ``relabel`` / ``summarize``.
+        """
+        transcript = self.transcribe(audio_path, run_dir, language=language)
+        summary = self.summarize(
+            run_dir, summarizer=summarizer, batch=batch, language=language
+        )
+        meta = read_meta(run_dir)
+        return RunResult(transcript=transcript, summary=summary, meta=meta)
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +298,11 @@ def _speaker_label(raw: str | None) -> str | None:
 
 
 def _to_canonical_transcript(
-    t: aai.Transcript, *, source_audio: str, language: str
+    t: aai.Transcript,
+    *,
+    source_audio: str,
+    language: str,
+    speech_model: str,
 ) -> Transcript:
     segments: list[Segment] = []
     speaker_order: list[str] = []
@@ -272,114 +355,14 @@ def _to_canonical_transcript(
         backend_meta={
             "transcript_id": t.id,
             "audio_url": getattr(t, "audio_url", None),
-            "speech_model": str(DEFAULT_SPEECH_MODEL),
+            "speech_model": speech_model,
         },
     )
 
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    """Best-effort JSON extraction from a possibly noisy LLM response."""
-    candidates: list[str] = []
-    for m in _JSON_FENCE_RE.finditer(text):
-        candidates.append(m.group(1))
-    candidates.append(text)
-    obj_match = _JSON_OBJECT_RE.search(text)
-    if obj_match:
-        candidates.append(obj_match.group(0))
-
-    last_err: Exception | None = None
-    for c in candidates:
-        try:
-            data = json.loads(c)
-        except json.JSONDecodeError as e:
-            last_err = e
-            continue
-        if isinstance(data, dict):
-            return data
-    raise ValueError(f"LeMUR did not return valid JSON. Last error: {last_err}")
-
-
-def _summarize_with_lemur(
-    transcript: aai.Transcript, *, language: str, model: str
-) -> tuple[dict[str, Any], Summary]:
-    prompt = _LEMUR_PROMPT_NL if language.lower().startswith("nl") else _LEMUR_PROMPT_EN
-    response = transcript.lemur.task(
-        prompt=prompt,
-        final_model=model,
-        max_output_size=4000,
-        temperature=0.0,
-    )
-    raw_text = getattr(response, "response", None) or str(response)
-    raw: dict[str, Any] = {
-        "request_id": getattr(response, "request_id", None),
-        "response": raw_text,
-    }
-
-    try:
-        data = _extract_json(raw_text)
-    except ValueError:
-        data = {}
-
-    fallback_title = (
-        "Vergaderingsamenvatting"
-        if language.lower().startswith("nl")
-        else "Meeting summary"
-    )
-
-    summary = Summary(
-        title=str(data.get("title") or fallback_title),
-        tldr=[str(b) for b in (data.get("tldr") or []) if str(b).strip()],
-        topics=[
-            Topic(
-                title=str(item.get("title") or ""),
-                bullets=[str(b) for b in (item.get("bullets") or []) if str(b).strip()],
-            )
-            for item in (data.get("topics") or [])
-            if isinstance(item, dict) and (item.get("title") or item.get("bullets"))
-        ],
-        decisions=_parse_decisions(data.get("decisions") or []),
-        action_items=_parse_action_items(data.get("action_items") or []),
-        open_questions=[str(q) for q in (data.get("open_questions") or []) if str(q).strip()],
-        next_steps=[str(s) for s in (data.get("next_steps") or []) if str(s).strip()],
-        language=language,
-        summarizer_backend=f"assemblyai-lemur:{model}",
-        prompt_version=PROMPT_VERSION,
-    )
-    return raw, summary
-
-
-def _parse_decisions(items: list[Any]) -> list[Decision]:
-    out: list[Decision] = []
-    for d in items:
-        text = (
-            str(d.get("text") or "").strip()
-            if isinstance(d, dict)
-            else str(d).strip()
-        )
-        if text:
-            out.append(Decision(text=text))
-    return out
-
-
-def _parse_action_items(items: list[Any]) -> list[ActionItem]:
-    out: list[ActionItem] = []
-    for a in items:
-        if not isinstance(a, dict):
-            continue
-        task = str(a.get("task") or "").strip()
-        if not task:
-            continue
-        owner = a.get("owner")
-        due = a.get("due")
-        out.append(
-            ActionItem(
-                task=task,
-                owner=str(owner).strip() if isinstance(owner, str) and owner.strip() else None,
-                due=str(due).strip() if isinstance(due, str) and due.strip() else None,
-            )
-        )
-    return out
+# Re-export for callers that previously relied on these from this module.
+__all__ = [
+    "AssemblyAIPipeline",
+    "DEFAULT_SPEECH_MODEL",
+    "SpeakerMappingError",
+]

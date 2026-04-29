@@ -25,27 +25,61 @@ def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
 
 def write_run(run_dir: Path, result: RunResult) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
+    write_transcript(run_dir, result.transcript)
+    write_summary(run_dir, result.summary)
+    write_meta(run_dir, result.meta)
+
+
+def write_transcript(run_dir: Path, transcript: Transcript) -> None:
+    """Write `transcript.json` + `transcript.md` for an in-progress run."""
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "transcript.json").write_text(
-        result.transcript.model_dump_json(indent=2), encoding="utf-8"
-    )
-    (run_dir / "summary.json").write_text(
-        result.summary.model_dump_json(indent=2), encoding="utf-8"
-    )
-    (run_dir / "meta.json").write_text(
-        result.meta.model_dump_json(indent=2), encoding="utf-8"
+        transcript.model_dump_json(indent=2), encoding="utf-8"
     )
     (run_dir / "transcript.md").write_text(
-        render_transcript_md(result.transcript), encoding="utf-8"
+        render_transcript_md(transcript), encoding="utf-8"
+    )
+
+
+def write_summary(run_dir: Path, summary: Summary) -> None:
+    """Write `summary.json` + `summary.md` for a completed run."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "summary.json").write_text(
+        summary.model_dump_json(indent=2), encoding="utf-8"
     )
     (run_dir / "summary.md").write_text(
-        render_summary_md(result.summary), encoding="utf-8"
+        render_summary_md(summary), encoding="utf-8"
     )
+
+
+def write_meta(run_dir: Path, meta: RunMeta) -> None:
+    """Write `meta.json` for an in-progress or completed run."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "meta.json").write_text(
+        meta.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+
+def read_transcript(run_dir: Path) -> Transcript:
+    return Transcript.model_validate_json(
+        (run_dir / "transcript.json").read_text("utf-8")
+    )
+
+
+def read_meta(run_dir: Path) -> RunMeta:
+    return RunMeta.model_validate_json((run_dir / "meta.json").read_text("utf-8"))
 
 
 def read_run(run_dir: Path) -> RunResult:
-    transcript = Transcript.model_validate_json((run_dir / "transcript.json").read_text("utf-8"))
+    """Read a fully completed run.
+
+    Raises ``FileNotFoundError`` if ``summary.json`` is missing — use
+    :func:`read_transcript` / :func:`read_meta` for partial runs that
+    have transcribed but not yet summarized.
+    """
+    transcript = read_transcript(run_dir)
     summary = Summary.model_validate_json((run_dir / "summary.json").read_text("utf-8"))
-    meta = RunMeta.model_validate_json((run_dir / "meta.json").read_text("utf-8"))
+    meta = read_meta(run_dir)
     return RunResult(transcript=transcript, summary=summary, meta=meta)
 
 
