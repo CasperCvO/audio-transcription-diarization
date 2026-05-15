@@ -42,9 +42,10 @@ def _select_pipeline(
     summarizer: str,
     cleanup: bool,
     name_resolution: bool,
+    speakers: int | None,
 ) -> MeetingPipeline:
     if backend == "assemblyai":
-        return AssemblyAIPipeline()
+        return AssemblyAIPipeline(speakers_expected=speakers)
     if backend == "custom":
         return CustomPipeline(
             transcriber=transcriber,
@@ -52,6 +53,7 @@ def _select_pipeline(
             summarizer=summarizer,
             cleanup=cleanup,
             name_resolution=name_resolution,
+            num_speakers=speakers,
         )
     raise typer.BadParameter(f"Unknown backend: {backend!r}")
 
@@ -81,9 +83,13 @@ def run(
     diarizer: Annotated[
         str,
         typer.Option(
-            "--diarizer", help="pyannoteai | pyannote_local (custom backend only)"
+            "--diarizer",
+            help=(
+                "builtin (trust the transcriber's own speaker labels, e.g. "
+                "Scribe v2) | pyannoteai | pyannote_local. Custom backend only."
+            ),
         ),
-    ] = "pyannoteai",
+    ] = "builtin",
     cleanup: Annotated[bool, typer.Option("--cleanup/--no-cleanup")] = False,
     name_resolution: Annotated[
         bool,
@@ -92,6 +98,13 @@ def run(
             help="Try to map SPEAKER_XX labels to real names via Claude (custom backend).",
         ),
     ] = False,
+    speakers: Annotated[
+        int | None,
+        typer.Option(
+            "--speakers",
+            help="Expected number of speakers (hint for diarization).",
+        ),
+    ] = None,
     sync: Annotated[
         bool,
         typer.Option(
@@ -110,7 +123,7 @@ def run(
     """
     settings = get_settings()
     pipeline = _select_pipeline(
-        backend, transcriber, diarizer, summarizer, cleanup, name_resolution
+        backend, transcriber, diarizer, summarizer, cleanup, name_resolution, speakers
     )
     run_id = new_run_id(audio, pipeline.name)
     run_dir = settings.transcription_dir / run_id
@@ -167,15 +180,26 @@ def transcribe(
         str,
         typer.Option(
             "--diarizer",
-            help="pyannoteai | pyannote_local (custom backend only)",
+            help=(
+                "builtin (trust the transcriber's own speaker labels, e.g. "
+                "Scribe v2) | pyannoteai | pyannote_local. Custom backend only."
+            ),
         ),
-    ] = "pyannoteai",
+    ] = "builtin",
+    speakers: Annotated[
+        int | None,
+        typer.Option(
+            "--speakers",
+            help="Expected number of speakers (hint for diarization).",
+        ),
+    ] = None,
 ) -> None:
     """Stage 1: transcribe + diarize; emit speakers.json + snippets.
 
     Track A (default): uses AssemblyAI's unified transcription+diarization.
-    Track B (--backend custom): composes separate transcriber and diarizer models
-    for best-of-breed quality (e.g. ElevenLabs Scribe v2 + pyannoteAI).
+    Track B (--backend custom): uses ElevenLabs Scribe v2 for both transcription
+    and diarization by default; pass --diarizer pyannoteai / pyannote_local to
+    compose a separate diarizer instead.
 
     After this completes, listen to the per-speaker clips in
     ``<run_dir>/snippets/`` and edit ``<run_dir>/speakers.json`` to assign
@@ -187,7 +211,7 @@ def transcribe(
             raise typer.BadParameter(
                 "--transcriber is only available with --backend custom"
             )
-        if diarizer != "pyannoteai":
+        if diarizer != "builtin":
             raise typer.BadParameter(
                 "--diarizer is only available with --backend custom"
             )
@@ -197,7 +221,7 @@ def transcribe(
     run_dir: Path
 
     if backend == "assemblyai":
-        pipeline = AssemblyAIPipeline()
+        pipeline = AssemblyAIPipeline(speakers_expected=speakers)
         run_id = new_run_id(audio, pipeline.name)
         run_dir = settings.transcription_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -219,6 +243,7 @@ def transcribe(
             transcriber=transcriber,
             diarizer=diarizer,
             summarizer="claude",  # Required by constructor but unused in transcribe_only
+            num_speakers=speakers,
         )
         run_id = new_run_id(audio, pipeline.name)
         run_dir = settings.transcription_dir / run_id
