@@ -69,7 +69,18 @@ The legacy `meetings run --backend assemblyai` chains stage 1 + stage 3
 
 ### A2. AssemblyAI transcription + diarization — done
 - [x] `pipelines/assemblyai.py::AssemblyAIPipeline.transcribe(audio_path, run_dir, *, language="nl", snippets_per_speaker=3)`:
-  - `aai.TranscriptionConfig(speech_model=universal, language_code=language, speaker_labels=True, punctuate=True, format_text=True)`.
+  - `aai.TranscriptionConfig(speech_models=["universal-2"], language_code=language, speaker_labels=True, punctuate=True, format_text=True)`.
+  - **2026-05 API update:** the singular `speech_model` field is deprecated
+    server-side and now rejected — requests must use `speech_models`
+    (plural list, priority order). `DEFAULT_SPEECH_MODELS = ("universal-2",)`
+    keeps Dutch on Universal-2; pass
+    `speech_models=["universal-3-pro", "universal-2"]` for English /
+    Spanish / German / French / Portuguese / Italian meetings to opt
+    into Universal-3 Pro with automatic fallback.
+  - `speakers_expected: int | None = None` on `AssemblyAIPipeline.__init__` is
+    passed through to `aai.TranscriptionConfig(speakers_expected=...)` to
+    nudge the diarizer toward a specific speaker count. Recorded in
+    `meta.json.extra.speakers_expected` for auditing.
   - **Native `auto_chapters` and `summarization` are not enabled** —
     they are English-only and superseded by the LLM step.
   - Maps `utterances` → `Segment`s, `utterance.words` → `Word`s; speaker
@@ -183,6 +194,8 @@ uv run meetings preprocess "audio/raw/<name>.m4a"
 
 # 2. Stage 1 — transcribe + diarize, generate speakers.json + snippets.
 uv run meetings transcribe --audio "audio/processed/<name>.16k.mono.wav" --language nl
+# Or, if you know the expected speaker count:
+uv run meetings transcribe --audio "audio/processed/<name>.16k.mono.wav" --language nl --speakers 4
 
 # 3. Listen to Transcription/<run_id>/snippets/SPEAKER_*.wav and edit
 #    Transcription/<run_id>/speakers.json:
@@ -203,6 +216,10 @@ For a no-pause smoke test (skips relabel; uses generic SPEAKER_X labels):
 uv run meetings run --backend assemblyai `
   --audio "audio/processed/<name>.16k.mono.wav" --language nl `
   --summarizer claude
+# With speaker-count hint:
+uv run meetings run --backend assemblyai `
+  --audio "audio/processed/<name>.16k.mono.wav" --language nl `
+  --speakers 4 --summarizer claude
 ```
 
 Outputs land in `Transcription/<audio-stem>__assemblyai__<utc-timestamp>/`.

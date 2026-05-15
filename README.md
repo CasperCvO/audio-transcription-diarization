@@ -54,8 +54,8 @@ Each run writes its outputs under `Transcription/<run_id>/`:
 - `--backend` — `assemblyai` (default) or `custom`.
 - `--language` — BCP-47 language code, default `nl`.
 - Custom-backend-only:
-  - `--transcriber` — `whisper-1` (default), `openai_gpt4o`, `elevenlabs`, `deepgram`.
-  - `--diarizer` — `pyannoteai` (default), `pyannote_local`.
+  - `--transcriber` — `elevenlabs` (default, Scribe v2), `openai_gpt4o`, `whisper-1`, `deepgram`.
+  - `--diarizer` — `builtin` (default; trust the transcriber's own speaker labels, e.g. Scribe v2), `pyannoteai`, `pyannote_local`.
   - `--summarizer` — `claude` (default).
   - `--name-resolution/--no-name-resolution` — try to map `SPEAKER_XX` to real names via Claude.
   - `--cleanup/--no-cleanup` — remove intermediate artifacts after a successful run.
@@ -68,9 +68,9 @@ Copy `.env.example` to `.env` and fill in only what you plan to use:
 |----------|---------|
 | `ASSEMBLYAI_API_KEY` | Track A (AssemblyAI Universal-2). |
 | `OPENAI_API_KEY`     | Track B transcription (`whisper-1`, `openai_gpt4o`). |
-| `ELEVENLABS_API_KEY` | Track B transcription (`elevenlabs`). |
+| `ELEVENLABS_API_KEY` | Track B transcription **and** default diarization (Scribe v2, `--diarizer builtin`). |
 | `DEEPGRAM_API_KEY`   | Track B transcription (`deepgram`). |
-| `PYANNOTEAI_API_KEY` | Track B diarization (`pyannoteai`). |
+| `PYANNOTEAI_API_KEY` | Optional Track B diarization (`--diarizer pyannoteai`) for overlap-heavy audio. |
 | `ANTHROPIC_API_KEY`  | Track B summarization (`claude`) and optional name resolution. |
 | `GOOGLE_API_KEY`     | Reserved for alternative summarizers. |
 | `HF_TOKEN`           | Optional local pyannote fallback (`pyannote_local`). |
@@ -90,9 +90,10 @@ tests/
 ## Status
 
 - [x] Repo modernization scaffold (`plan/03-repo-modernization.md`)
-- [ ] Track A — AssemblyAI implementation (`plan/01-track-a-assemblyai.md`)
-- [ ] Track B — custom pipeline (`plan/02-track-b-custom-pipeline.md`)
+- [x] Track A — AssemblyAI implementation (`plan/01-track-a-assemblyai.md`)
+- [x] Track B — custom pipeline (`plan/02-track-b-custom-pipeline.md`)
 - [ ] Evaluation & comparison (`plan/04-evaluation-and-comparison.md`)
+- [ ] Live 2 h Dutch acceptance run (Scribe v2 + `builtin` + Claude/Gemini)
 
 ## Development
 

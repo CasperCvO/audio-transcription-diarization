@@ -30,24 +30,33 @@ through the `--transcriber`, `--diarizer`, `--summarizer` CLI flags.
 
 ## 1. Transcription
 
-Default backend: `OpenAITranscriber("whisper-1")`.
+Default backend: `ElevenLabsTranscriber` (Scribe v2). Scribe v2 also emits
+speaker labels, so the default Track-B composition uses **one vendor** for
+both transcribe and diarize (see §2 below).
 
 | Backend (CLI `--transcriber`) | List price | 2 h cost |
 |---|---|---|
-| `whisper-1` *(default)* | $0.006 / min | **≈ $0.72** |
+| `elevenlabs` (Scribe v2) *(default)* | ~$0.40 / hour | **≈ $0.80** |
+| `whisper-1` | $0.006 / min | ≈ $0.72 |
 | `gpt-4o-transcribe` | ~$0.006 / min equiv. | ≈ $0.72 |
 | `gpt-4o-mini-transcribe` | ~$0.003 / min | ≈ $0.36 |
-| `elevenlabs` (Scribe) | ~$0.40 / hour | ≈ $0.80 |
 | `deepgram` (Nova-3) | ~$0.0043 / min | ≈ $0.52 |
 
 ## 2. Diarization
 
-Default backend: `PyannoteAIDiarizer("precision-2")`.
+Default backend: `BuiltinDiarizer` — **trust the speaker labels emitted by
+Scribe v2**; no separate diarization API call. The `diarize` stage is still
+recorded in `meta.timings` but is a no-op.
 
 | Backend (CLI `--diarizer`) | List price | 2 h cost |
 |---|---|---|
-| `pyannoteai` (`precision-2`) *(default)* | ~$0.40 / hour | **≈ $0.80** |
+| `builtin` *(default — Scribe v2's own labels)* | $0 (already paid in §1) | **$0** |
+| `pyannoteai` (`precision-2`) | ~$0.40 / hour | ≈ $0.80 |
 | `pyannote_local` | $0 (self-hosted) | $0 — needs GPU + HF token |
+
+> `builtin` requires a transcriber that diarizes natively (Scribe v2 does).
+> If you pick `--transcriber whisper-1` or similar, pass `--diarizer pyannoteai`
+> (or `pyannote_local`) as well.
 
 ## 3. Summarization — Claude (Anthropic)
 
@@ -126,13 +135,22 @@ total ≈ 0.089 × <input $/M> + 0.013 × <output $/M>
 
 | Config | Transcribe | Diarize | Summarize | **Total** |
 |---|---:|---:|---:|---:|
-| **Default** (`whisper-1` + `pyannoteai` + Sonnet 4.5) | $0.72 | $0.80 | $0.46 | **≈ $1.98** |
-| Default but with **Sonnet 4.6** (same-tier pricing) | $0.72 | $0.80 | $0.46 | **≈ $1.98** |
+| **Default** (`elevenlabs` + `builtin` + Sonnet 4.5) | $0.80 | $0.00 | $0.46 | **≈ $1.26** |
+| Default but with **Sonnet 4.6** (same-tier pricing) | $0.80 | $0.00 | $0.46 | **≈ $1.26** |
+| Scribe v2 + pyannoteAI A/B (`elevenlabs` + `pyannoteai` + Sonnet 4.5) | $0.80 | $0.80 | $0.46 | ≈ $2.06 |
+| Whisper + pyannoteAI (`whisper-1` + `pyannoteai` + Sonnet 4.5) | $0.72 | $0.80 | $0.46 | ≈ $1.98 |
 | Cheap cloud (`gpt-4o-mini-transcribe` + `pyannoteai` + Sonnet 4.5) | $0.36 | $0.80 | $0.46 | ≈ $1.62 |
 | GPU-local diarization (`whisper-1` + `pyannote_local` + Sonnet 4.5) | $0.72 | $0.00 | $0.46 | ≈ $1.18 |
 | Cheapest CLI combo (`gpt-4o-mini-transcribe` + `pyannote_local` + Sonnet 4.5) | $0.36 | $0.00 | $0.46 | ≈ $0.82 |
 
 Add **+$0.01** to any row when running with `--name-resolution`.
+
+### Track A reference (AssemblyAI Universal-2)
+
+Track A is a single API that transcribes + diarizes in one call. List price
+is roughly $0.37 / hour for Universal-2 (`best` tier), so a 2 h meeting is
+**≈ $0.74 transcribe+diarize** + the same ~$0.46 summarize ≈ **$1.20 total**.
+Verify on https://www.assemblyai.com/pricing before relying on this.
 
 ## Caveats
 
@@ -147,13 +165,18 @@ Add **+$0.01** to any row when running with `--name-resolution`.
 
 ## Quick recompute formula
 
-For a meeting of duration `D` hours, default backends, Sonnet-tier summarizer
-at `(p_in, p_out)` $/M tokens:
+For a meeting of duration `D` hours, **default backends** (Scribe v2 +
+built-in diarization + Claude Sonnet), summarizer at `(p_in, p_out)`
+$/M tokens:
 
 ```
-transcribe ≈ 0.36 · D                 # whisper-1
-diarize    ≈ 0.40 · D                 # pyannoteai precision-2
+transcribe ≈ 0.40 · D                 # elevenlabs Scribe v2 (incl. diarization)
+diarize    ≈ 0                        # builtin (Scribe v2's own labels)
 summarize  ≈ (45·D)·p_in/1000 + (6·D)·p_out/1000   # rough scaling
 ```
 
-For `D=2`, `p_in=3`, `p_out=15` this reproduces ≈ $1.98.
+For `D=2`, `p_in=3`, `p_out=15` this reproduces ≈ $1.26.
+
+Swap `0.40·D` for `0.36·D` (`gpt-4o-mini-transcribe`), `0.36·D`
+(`whisper-1`), or `0.26·D` (`deepgram` Nova-3), and add `0.40·D` for
+`pyannoteai` diarization if the picked transcriber doesn't diarize.

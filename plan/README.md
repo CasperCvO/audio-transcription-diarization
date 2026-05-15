@@ -18,7 +18,7 @@ and a shared evaluation method (see `04-evaluation-and-comparison.md`).
 |------|---------|
 | `00-architecture.md`            | Big-picture decisions, data contracts, directory layout. |
 | `01-track-a-assemblyai.md`      | Step-by-step plan for AssemblyAI Universal-2 PoC. |
-| `02-track-b-custom-pipeline.md` | Step-by-step plan for the multi-model custom pipeline (2026 refresh: Scribe v2 default). |
+| `02-track-b-custom-pipeline.md` | Step-by-step plan for the multi-model custom pipeline (2026 refresh: Scribe v2 for ASR + built-in diarization by default). |
 | `03-repo-modernization.md`      | Shared modernization: deps, lint, tests, CLI, IO. |
 | `04-evaluation-and-comparison.md` | How to compare Track A vs Track B output quality. |
 | `05-audio-preprocessing.md`     | Canonical input format and ffmpeg conversion steps. |
@@ -36,7 +36,7 @@ explicitly at the top of each file.
 1. `03-repo-modernization.md` — set up the new repo skeleton (do this first).
 2. `05-audio-preprocessing.md` — normalize each new recording into `audio/processed/`.
 3. `01-track-a-assemblyai.md` — fastest path to a working baseline.
-4. `02-track-b-custom-pipeline.md` — build the custom pipeline (2026 refresh: Scribe v2 + pyannoteAI + Claude/Gemini).
+4. `02-track-b-custom-pipeline.md` — build the custom pipeline (2026 refresh: Scribe v2 for ASR + built-in diarization, Claude/Gemini for summary; pyannoteAI optional). Both tracks support a `--speakers N` CLI hint to guide the diarizer.
 5. `06-testing-and-comparison-notebooks.md` — smoke-test both pipelines on the 3 short samples; run the 2 h meeting from the CLI; review + relabel + summarize via the notebooks.
 6. `04-evaluation-and-comparison.md` — final apples-to-apples comparison of summary quality.
 
