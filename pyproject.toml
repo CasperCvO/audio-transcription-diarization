@@ -19,6 +19,7 @@ dependencies = [
     "assemblyai>=0.63.0",
     "elevenlabs>=1.0",
     "nbstripout>=0.9.1",
+    "pandas>=3.0.2",
 ]
 
 [project.scripts]
