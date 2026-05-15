@@ -23,8 +23,13 @@ without any human-in-the-loop pause, for backward compatibility with the
 ``meetings run`` CLI command.
 
 Notes on AssemblyAI feature usage:
-- Speech model is fixed to **Universal-2** (``aai.SpeechModel.universal``)
-  because the Dutch primary language is not supported by Universal-3 Pro.
+- Speech model is fixed to **Universal-2** via the ``speech_models`` list
+  parameter (``["universal-2"]``) because the Dutch primary language is
+  not supported by Universal-3 Pro. Note: the legacy ``speech_model``
+  (singular) field is deprecated by the AssemblyAI API and is no longer
+  accepted server-side; callers must use ``speech_models`` (plural list)
+  in priority order. See:
+  https://www.assemblyai.com/docs/pre-recorded-audio/select-the-speech-model
 - Native ``auto_chapters`` and ``summarization`` are English-only and
   therefore disabled — we no longer rely on them.
 """
@@ -32,6 +37,7 @@ Notes on AssemblyAI feature usage:
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import assemblyai as aai  # type: ignore[import-untyped]
@@ -58,7 +64,12 @@ from ..summarize.anthropic_batch import AnthropicSummarizer
 from ..summarize.base import Summarizer
 from ..summarize.gemini_batch import GeminiSummarizer
 
-DEFAULT_SPEECH_MODEL: aai.SpeechModel = aai.SpeechModel.universal
+# Default speech-model priority list passed to AssemblyAI as ``speech_models``.
+# Dutch is only supported by Universal-2, so we pin to it here. Callers that
+# know they have an English / Spanish / German / French / Portuguese / Italian
+# meeting can pass ``["universal-3-pro", "universal-2"]`` to opt into the
+# newer model with automatic fallback.
+DEFAULT_SPEECH_MODELS: tuple[str, ...] = ("universal-2",)
 
 
 def _track_a_summarizer(name: str, *, batch: bool = True) -> Summarizer:
@@ -84,9 +95,14 @@ class AssemblyAIPipeline:
 
     def __init__(
         self,
-        speech_model: aai.SpeechModel = DEFAULT_SPEECH_MODEL,
+        speech_models: Sequence[str] = DEFAULT_SPEECH_MODELS,
+        *,
+        speakers_expected: int | None = None,
     ) -> None:
-        self.speech_model = speech_model
+        self.speech_models: list[str] = list(speech_models)
+        if speakers_expected is not None and speakers_expected < 1:
+            raise ValueError("speakers_expected must be >= 1")
+        self.speakers_expected = speakers_expected
 
     # ------------------------------------------------------------------ #
     # Stage 1: transcribe
@@ -115,9 +131,10 @@ class AssemblyAIPipeline:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         config = aai.TranscriptionConfig(
-            speech_model=self.speech_model,
+            speech_models=self.speech_models,
             language_code=language,
             speaker_labels=True,
+            speakers_expected=self.speakers_expected,
             punctuate=True,
             format_text=True,
         )
@@ -135,7 +152,7 @@ class AssemblyAIPipeline:
             transcript,
             source_audio=str(audio_path),
             language=language,
-            speech_model=str(self.speech_model),
+            speech_models=self.speech_models,
         )
 
         write_transcript(run_dir, canonical)
@@ -164,10 +181,16 @@ class AssemblyAIPipeline:
             input_sha256=sha256_of(audio_path),
             duration=canonical.duration,
             timings={"transcribe_s": transcribe_seconds},
-            model_versions={"assemblyai_speech": str(self.speech_model)},
+            model_versions={
+                "assemblyai_speech": ",".join(self.speech_models),
+                "assemblyai_speech_used": str(
+                    getattr(transcript, "speech_model_used", None) or ""
+                ),
+            },
             extra={
                 "transcript_id": transcript.id,
                 "language_code": language,
+                "speakers_expected": self.speakers_expected,
                 "stage": "transcribed",
             },
         )
@@ -302,12 +325,15 @@ def _to_canonical_transcript(
     *,
     source_audio: str,
     language: str,
-    speech_model: str,
+    speech_models: Sequence[str],
 ) -> Transcript:
     segments: list[Segment] = []
     speaker_order: list[str] = []
     seen: set[str] = set()
-    duration = _ms_to_s(getattr(t, "audio_duration", 0))
+    # AssemblyAI's `Transcript.audio_duration` is already in **seconds** (per
+    # the SDK schema and REST docs). Word/utterance start/end are in ms — those
+    # still go through `_ms_to_s` below.
+    duration = float(getattr(t, "audio_duration", 0) or 0)
 
     utterances = getattr(t, "utterances", None) or []
     if utterances:
@@ -355,7 +381,8 @@ def _to_canonical_transcript(
         backend_meta={
             "transcript_id": t.id,
             "audio_url": getattr(t, "audio_url", None),
-            "speech_model": speech_model,
+            "speech_models": list(speech_models),
+            "speech_model_used": getattr(t, "speech_model_used", None),
         },
     )
 
@@ -363,6 +390,6 @@ def _to_canonical_transcript(
 # Re-export for callers that previously relied on these from this module.
 __all__ = [
     "AssemblyAIPipeline",
-    "DEFAULT_SPEECH_MODEL",
+    "DEFAULT_SPEECH_MODELS",
     "SpeakerMappingError",
 ]

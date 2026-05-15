@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from meetings.config import get_settings
 from meetings.io import new_run_id
+from meetings.pipelines.assemblyai import _to_canonical_transcript
 from meetings.schema import Segment, Transcript, Word
 from meetings.speakers import (
     SpeakerMappingError,
@@ -87,6 +89,71 @@ def test_parse_summary_payload_fills_defaults() -> None:
     assert summary.tldr == []
     assert summary.action_items == []
     assert summary.summarizer_backend == "anthropic-batch:claude-test"
+
+
+# --------------------------------------------------------------------------- #
+# Canonicalization — duration units (regression for /1000 bug)
+# --------------------------------------------------------------------------- #
+
+
+def _fake_aai_transcript(
+    *,
+    audio_duration: int | None,
+    utterances: list | None = None,
+) -> SimpleNamespace:
+    """Minimal stand-in for `aai.Transcript` accepted by `_to_canonical_transcript`.
+
+    Only the attributes actually read by the canonicaliser are provided.
+    """
+    return SimpleNamespace(
+        id="fake-id",
+        audio_url="https://example/fake.wav",
+        audio_duration=audio_duration,
+        text=None,
+        utterances=utterances or [],
+        speech_model_used="universal",
+    )
+
+
+def test_canonical_transcript_keeps_audio_duration_in_seconds() -> None:
+    """`Transcript.audio_duration` is in seconds in the AssemblyAI SDK.
+
+    Regression for a bug where it was divided by 1000 (because word/utterance
+    timestamps *are* in ms), turning a 2 h meeting's `transcript.duration`
+    into ~7.2 s instead of 7200 s.
+    """
+    fake = _fake_aai_transcript(audio_duration=7200, utterances=[])
+    canonical = _to_canonical_transcript(
+        fake,  # type: ignore[arg-type]
+        source_audio="meeting.wav",
+        language="nl",
+        speech_models=["universal"],
+    )
+    assert canonical.duration == 7200.0
+
+
+def test_canonical_transcript_falls_back_to_last_segment_when_duration_missing() -> None:
+    """If `audio_duration` is None, fall back to the last segment's end time."""
+    word = SimpleNamespace(
+        text="hi", start=0, end=500, speaker="A", confidence=0.9
+    )
+    utterance = SimpleNamespace(
+        speaker="A",
+        start=0,
+        end=2000,  # ms -> 2.0 s
+        text="hi",
+        words=[word],
+    )
+    fake = _fake_aai_transcript(audio_duration=None, utterances=[utterance])
+    canonical = _to_canonical_transcript(
+        fake,  # type: ignore[arg-type]
+        source_audio="meeting.wav",
+        language="nl",
+        speech_models=["universal"],
+    )
+    assert canonical.duration == 2.0
+    assert canonical.segments[0].end == 2.0
+    assert canonical.segments[0].words[0].end == 0.5
 
 
 # --------------------------------------------------------------------------- #
