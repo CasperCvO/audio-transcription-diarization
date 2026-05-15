@@ -1,5 +1,6 @@
 """Transcription backends. See `plan/02-track-b-custom-pipeline.md` task B2."""
 
+from ..config import get_settings
 from .base import Transcriber
 from .deepgram import DeepgramTranscriber
 from .elevenlabs_scribe import ElevenLabsTranscriber
@@ -21,7 +22,8 @@ def get_transcriber(name: str) -> Transcriber:
     if name in {"whisper-1", "whisper"}:
         return OpenAITranscriber(model="whisper-1")
     if name in {"elevenlabs", "scribe_v2", "scribe"}:
-        return ElevenLabsTranscriber()
+        settings = get_settings()
+        return ElevenLabsTranscriber(timeout=settings.elevenlabs_timeout)
     if name == "deepgram":
         return DeepgramTranscriber()
     raise ValueError(f"Unknown transcriber: {name!r}")

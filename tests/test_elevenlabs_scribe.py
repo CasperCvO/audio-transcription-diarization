@@ -6,7 +6,7 @@ See plan/02-track-b-custom-pipeline.md task B2a.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -14,13 +14,21 @@ from meetings.config import get_settings
 from meetings.transcribe.elevenlabs_scribe import ElevenLabsTranscriber
 
 
-def _mock_word(text: str, start: float, end: float, speaker: str, confidence: float) -> MagicMock:
+def _mock_word(
+    text: str,
+    start: float | None,
+    end: float | None,
+    speaker_id: str | None,
+    logprob: float,
+    type: str = "word",
+) -> MagicMock:
     word = MagicMock()
     word.text = text
     word.start = start
     word.end = end
-    word.speaker = speaker
-    word.confidence = confidence
+    word.speaker_id = speaker_id
+    word.logprob = logprob
+    word.type = type
     return word
 
 
@@ -33,21 +41,18 @@ def test_parse_fixture_response() -> None:
     with fixture_path.open() as f:
         fixture_data = json.load(f)
 
-    # Create mock ElevenLabs response
+    # Create mock ElevenLabs response (Scribe v2 schema)
     mock_result = MagicMock()
     mock_result.words = [_mock_word(**w) for w in fixture_data["words"]]
+    mock_result.audio_duration_secs = fixture_data["audio_duration_secs"]
 
     # Mock the ElevenLabs client
     mock_client = MagicMock()
-    mock_client.speech_to_text.transcribe.return_value = mock_result
+    mock_client.speech_to_text.convert.return_value = mock_result
 
-    # Mock AudioSegment for duration
-    with patch("meetings.transcribe.elevenlabs_scribe.AudioSegment") as mock_audio_segment, \
-         patch("meetings.transcribe.elevenlabs_scribe.ElevenLabs", return_value=mock_client), \
-         patch("meetings.transcribe.elevenlabs_scribe.get_settings") as mock_settings:
-        mock_seg = MagicMock()
-        mock_seg.__len__ = MagicMock(return_value=8200)  # 8.2 seconds in ms
-        mock_audio_segment.from_wav.return_value = mock_seg
+    with patch("meetings.transcribe.elevenlabs_scribe.ElevenLabs", return_value=mock_client), \
+         patch("meetings.transcribe.elevenlabs_scribe.get_settings") as mock_settings, \
+         patch.object(Path, "open", mock_open(read_data=b"")):
         mock_settings.return_value.elevenlabs_api_key = "test_key"
         transcriber = ElevenLabsTranscriber()
         transcript = transcriber.transcribe(Path("test.wav"), language="nl")
@@ -82,24 +87,22 @@ def test_speaker_normalisation_first_appearance_order() -> None:
     """Test that speaker labels are normalized to SPEAKER_<N> in first-appearance order."""
     # Create a response where speaker_2 appears before speaker_1
     words_data = [
-        {"text": "A", "start": 0.0, "end": 0.5, "speaker": "speaker_2", "confidence": 0.9},
-        {"text": "B", "start": 0.5, "end": 1.0, "speaker": "speaker_2", "confidence": 0.9},
-        {"text": "C", "start": 1.0, "end": 1.5, "speaker": "speaker_1", "confidence": 0.9},
-        {"text": "D", "start": 1.5, "end": 2.0, "speaker": "speaker_0", "confidence": 0.9},
+        {"text": "A", "start": 0.0, "end": 0.5, "speaker_id": "speaker_2", "logprob": -0.1},
+        {"text": "B", "start": 0.5, "end": 1.0, "speaker_id": "speaker_2", "logprob": -0.1},
+        {"text": "C", "start": 1.0, "end": 1.5, "speaker_id": "speaker_1", "logprob": -0.1},
+        {"text": "D", "start": 1.5, "end": 2.0, "speaker_id": "speaker_0", "logprob": -0.1},
     ]
 
     mock_result = MagicMock()
     mock_result.words = [_mock_word(**w) for w in words_data]
+    mock_result.audio_duration_secs = 2.0
 
     mock_client = MagicMock()
-    mock_client.speech_to_text.transcribe.return_value = mock_result
+    mock_client.speech_to_text.convert.return_value = mock_result
 
-    with patch("meetings.transcribe.elevenlabs_scribe.AudioSegment") as mock_audio_segment, \
-         patch("meetings.transcribe.elevenlabs_scribe.ElevenLabs", return_value=mock_client), \
-         patch("meetings.transcribe.elevenlabs_scribe.get_settings") as mock_settings:
-        mock_seg = MagicMock()
-        mock_seg.__len__ = MagicMock(return_value=2000)
-        mock_audio_segment.from_wav.return_value = mock_seg
+    with patch("meetings.transcribe.elevenlabs_scribe.ElevenLabs", return_value=mock_client), \
+         patch("meetings.transcribe.elevenlabs_scribe.get_settings") as mock_settings, \
+         patch.object(Path, "open", mock_open(read_data=b"")):
         mock_settings.return_value.elevenlabs_api_key = "test_key"
         transcriber = ElevenLabsTranscriber()
         transcript = transcriber.transcribe(Path("test.wav"), language="nl")

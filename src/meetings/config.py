@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     audio_dir: Path = Field(default=REPO_ROOT / "Audio")
     transcription_dir: Path = Field(default=REPO_ROOT / "Transcription")
 
+    # Timeouts (seconds)
+    elevenlabs_timeout: float = Field(default=30 * 60, alias="ELEVENLABS_TIMEOUT")
+
     # Defaults
     default_language: str = "nl"
 

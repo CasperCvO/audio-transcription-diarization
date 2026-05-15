@@ -1,116 +1,25 @@
 {
+  "language_code": "nld",
+  "language_probability": 0.98,
+  "text": "Hallo iedereen welkom bij deze vergadering dank u wel we gaan vandaag bespreken het nieuwe project",
+  "audio_duration_secs": 8.2,
   "words": [
-    {
-      "text": "Hallo",
-      "start": 0.0,
-      "end": 0.5,
-      "speaker": "speaker_0",
-      "confidence": 0.98
-    },
-    {
-      "text": "iedereen",
-      "start": 0.5,
-      "end": 1.2,
-      "speaker": "speaker_0",
-      "confidence": 0.95
-    },
-    {
-      "text": "welkom",
-      "start": 1.2,
-      "end": 1.8,
-      "speaker": "speaker_0",
-      "confidence": 0.97
-    },
-    {
-      "text": "bij",
-      "start": 1.8,
-      "end": 2.1,
-      "speaker": "speaker_0",
-      "confidence": 0.99
-    },
-    {
-      "text": "deze",
-      "start": 2.1,
-      "end": 2.4,
-      "speaker": "speaker_0",
-      "confidence": 0.96
-    },
-    {
-      "text": "vergadering",
-      "start": 2.4,
-      "end": 3.2,
-      "speaker": "speaker_0",
-      "confidence": 0.94
-    },
-    {
-      "text": "dank",
-      "start": 3.5,
-      "end": 3.9,
-      "speaker": "speaker_1",
-      "confidence": 0.97
-    },
-    {
-      "text": "u",
-      "start": 3.9,
-      "end": 4.1,
-      "speaker": "speaker_1",
-      "confidence": 0.98
-    },
-    {
-      "text": "wel",
-      "start": 4.1,
-      "end": 4.4,
-      "speaker": "speaker_1",
-      "confidence": 0.95
-    },
-    {
-      "text": "we",
-      "start": 4.8,
-      "end": 5.1,
-      "speaker": "speaker_1",
-      "confidence": 0.96
-    },
-    {
-      "text": "gaan",
-      "start": 5.1,
-      "end": 5.5,
-      "speaker": "speaker_1",
-      "confidence": 0.94
-    },
-    {
-      "text": "vandaag",
-      "start": 5.5,
-      "end": 6.0,
-      "speaker": "speaker_1",
-      "confidence": 0.97
-    },
-    {
-      "text": "bespreken",
-      "start": 6.0,
-      "end": 6.8,
-      "speaker": "speaker_1",
-      "confidence": 0.95
-    },
-    {
-      "text": "het",
-      "start": 6.8,
-      "end": 7.0,
-      "speaker": "speaker_1",
-      "confidence": 0.98
-    },
-    {
-      "text": "nieuwe",
-      "start": 7.0,
-      "end": 7.5,
-      "speaker": "speaker_1",
-      "confidence": 0.96
-    },
-    {
-      "text": "project",
-      "start": 7.5,
-      "end": 8.2,
-      "speaker": "speaker_1",
-      "confidence": 0.94
-    }
+    {"text": "Hallo", "start": 0.0, "end": 0.5, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0202},
+    {"text": " ", "start": 0.5, "end": 0.5, "type": "spacing", "speaker_id": "speaker_0", "logprob": 0.0},
+    {"text": "iedereen", "start": 0.5, "end": 1.2, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0513},
+    {"text": "welkom", "start": 1.2, "end": 1.8, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0305},
+    {"text": "bij", "start": 1.8, "end": 2.1, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0101},
+    {"text": "deze", "start": 2.1, "end": 2.4, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0408},
+    {"text": "vergadering", "start": 2.4, "end": 3.2, "type": "word", "speaker_id": "speaker_0", "logprob": -0.0619},
+    {"text": "dank", "start": 3.5, "end": 3.9, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0305},
+    {"text": "u", "start": 3.9, "end": 4.1, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0202},
+    {"text": "wel", "start": 4.1, "end": 4.4, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0513},
+    {"text": "we", "start": 4.8, "end": 5.1, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0408},
+    {"text": "gaan", "start": 5.1, "end": 5.5, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0619},
+    {"text": "vandaag", "start": 5.5, "end": 6.0, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0305},
+    {"text": "bespreken", "start": 6.0, "end": 6.8, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0513},
+    {"text": "het", "start": 6.8, "end": 7.0, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0202},
+    {"text": "nieuwe", "start": 7.0, "end": 7.5, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0408},
+    {"text": "project", "start": 7.5, "end": 8.2, "type": "word", "speaker_id": "speaker_1", "logprob": -0.0619}
   ]
 }
