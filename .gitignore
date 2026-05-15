@@ -21,6 +21,9 @@ Transcription/
 *.txt
 !.env.example
 
+# Notebook run artifacts
+audio/test_sample/
+
 # Tooling
 .ruff_cache/
 .mypy_cache/
