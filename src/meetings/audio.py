@@ -97,6 +97,48 @@ def audio_meta(path: Path) -> AudioMeta:
     )
 
 
+def _is_canonical(src: Path) -> bool:
+    """Return True if ``src`` already conforms to 16 kHz mono PCM WAV.
+
+    A fast check via ffprobe lets us short-circuit `prepare_audio` when the
+    user passes an already-processed file (e.g. ``audio/processed/x.16k.mono.wav``),
+    avoiding wasted ffmpeg work and the ``x.16k.mono.16k.mono.wav`` double-suffix
+    that ``dst = dst_dir / f"{src.stem}.16k.mono.wav"`` would otherwise produce.
+    """
+    if src.suffix.lower() != ".wav":
+        return False
+    ffprobe = _require_binary("ffprobe")
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels",
+            "-of",
+            "json",
+            str(src),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        streams = json.loads(result.stdout).get("streams") or []
+    except json.JSONDecodeError:
+        return False
+    if not streams:
+        return False
+    s = streams[0]
+    return (
+        s.get("codec_name") == "pcm_s16le"
+        and int(s.get("sample_rate", 0)) == 16000
+        and int(s.get("channels", 0)) == 1
+    )
+
+
 def prepare_audio(
     src: Path,
     dst_dir: Path | None = None,
@@ -107,8 +149,10 @@ def prepare_audio(
     """Convert ``src`` to 16 kHz mono ``pcm_s16le`` WAV in ``dst_dir``.
 
     Idempotent: if the output already exists and ``overwrite`` is False, the
-    existing path is returned. No loudnorm / denoise / EQ / AGC is applied —
-    see plan/05-audio-preprocessing.md for the rationale.
+    existing path is returned. If the input is **already** 16 kHz mono PCM
+    WAV, the source path is returned unchanged (no ffmpeg pass, no
+    ``x.16k.mono.16k.mono.wav`` duplication). No loudnorm / denoise / EQ /
+    AGC is applied — see plan/05-audio-preprocessing.md for the rationale.
 
     Raises ``AudioPrepError`` if the input is missing, longer than
     ``max_duration`` seconds, or ffmpeg fails.
@@ -123,9 +167,18 @@ def prepare_audio(
             f"{max_duration/3600:.1f} h limit."
         )
 
+    # Fast path: input already conforms; nothing to do.
+    if not overwrite and _is_canonical(src):
+        return src
+
     dst_dir = dst_dir or (src.parent.parent / "processed")
     dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / f"{src.stem}.16k.mono.wav"
+    # Avoid `<stem>.16k.mono.16k.mono.wav` if a caller forces overwrite on
+    # an already-canonical name.
+    base_stem = src.stem
+    if base_stem.endswith(".16k.mono"):
+        base_stem = base_stem[: -len(".16k.mono")]
+    dst = dst_dir / f"{base_stem}.16k.mono.wav"
     if dst.exists() and not overwrite:
         return dst
 
