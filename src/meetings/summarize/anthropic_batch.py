@@ -38,7 +38,7 @@ from ._utils import (
 from .base import Summarizer
 from .prompts import SINGLE_CALL_PROMPT_VERSION, single_call_prompt
 
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4000
 POLL_INTERVAL_SECONDS = 30
 MAX_POLL_SECONDS = 24 * 60 * 60  # Anthropic's hard 24h batch SLA.

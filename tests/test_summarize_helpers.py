@@ -26,6 +26,13 @@ def test_parse_json_invalid_raises() -> None:
         parse_json("totaal geen json hier")
 
 
+def test_parse_json_tolerates_trailing_extra_brace() -> None:
+    # Gemini-3.1-pro-preview occasionally appends a stray ``}`` after a
+    # well-formed object. raw_decode should still recover the payload.
+    text = '{"tldr": ["a", "b"], "action_items": []}\n}'
+    assert parse_json(text) == {"tldr": ["a", "b"], "action_items": []}
+
+
 def test_fmt_ts_minutes_seconds() -> None:
     assert fmt_ts(0) == "00:00"
     assert fmt_ts(65) == "01:05"

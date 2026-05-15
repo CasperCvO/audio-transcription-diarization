@@ -36,7 +36,7 @@ from ._utils import (
 from .base import Summarizer
 from .prompts import SINGLE_CALL_PROMPT_VERSION, single_call_prompt
 
-DEFAULT_MODEL = "gemini-2.5-pro"
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_MAX_TOKENS = 4000
 POLL_INTERVAL_SECONDS = 30
 MAX_POLL_SECONDS = 24 * 60 * 60  # Gemini batch SLO.

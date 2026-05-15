@@ -18,22 +18,37 @@ def fmt_ts(seconds: float) -> str:
 
 
 def parse_json(text: str) -> dict[str, Any]:
-    """Parse a JSON object out of a model response, tolerating code fences."""
+    """Parse a JSON object out of a model response, tolerating code fences
+    and trailing junk (e.g. Gemini occasionally emits an extra ``}`` after a
+    well-formed object)."""
     candidates: list[str] = []
     m = _JSON_FENCE.search(text)
     if m:
         candidates.append(m.group(1))
     candidates.append(text)
+    decoder = json.JSONDecoder()
     for body in candidates:
         body = body.strip()
         start = body.find("{")
-        end = body.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            body = body[start : end + 1]
-        try:
-            return cast(dict[str, Any], json.loads(body))
-        except json.JSONDecodeError:
+        if start == -1:
             continue
+        # raw_decode parses the first JSON value and ignores any trailing
+        # characters, which makes us robust to stray braces / extra prose.
+        try:
+            obj, _ = decoder.raw_decode(body[start:])
+        except json.JSONDecodeError:
+            # Fallback: try the legacy start..rfind('}') slice in case the
+            # response had leading prose followed by valid JSON we can't
+            # otherwise locate.
+            end = body.rfind("}")
+            if end > start:
+                try:
+                    return cast(dict[str, Any], json.loads(body[start : end + 1]))
+                except json.JSONDecodeError:
+                    pass
+            continue
+        if isinstance(obj, dict):
+            return cast(dict[str, Any], obj)
     raise ValueError(f"Could not parse JSON from model response: {text[:300]!r}")
 
 
