@@ -13,7 +13,10 @@ from pathlib import Path
 
 from ..align import assign_speakers, group_into_segments
 from ..audio import audio_meta, prepare_audio
+from ..config import get_settings
 from ..diarize import Diarizer, get_diarizer
+from ..diarize.pyannoteai_api import PyannoteAIDiarizer
+from ..diarize.pyannote_local import PyannoteLocalDiarizer
 from ..io import new_run_id, write_meta, write_run, write_transcript
 from ..schema import RunMeta, RunResult, Segment, Transcript
 from ..snippets import extract_speaker_snippets
@@ -21,6 +24,7 @@ from ..speakers import write_skeleton
 from ..summarize import Summarizer, get_summarizer
 from ..summarize.names import apply_name_mapping, resolve_speaker_names
 from ..transcribe import Transcriber, get_transcriber
+from ..transcribe.elevenlabs_scribe import ElevenLabsTranscriber
 
 
 class CustomPipeline:
@@ -28,21 +32,63 @@ class CustomPipeline:
 
     def __init__(
         self,
-        transcriber: str | Transcriber = "whisper-1",
-        diarizer: str | Diarizer = "pyannoteai",
+        transcriber: str | Transcriber = "elevenlabs",
+        diarizer: str | Diarizer = "builtin",
         summarizer: str | Summarizer = "claude",
         cleanup: bool = False,
         name_resolution: bool = False,
+        *,
+        num_speakers: int | None = None,
     ) -> None:
-        self._transcriber = (
-            transcriber if not isinstance(transcriber, str) else get_transcriber(transcriber)
-        )
-        self._diarizer = diarizer if not isinstance(diarizer, str) else get_diarizer(diarizer)
+        # Resolve transcriber; if builtin diarizer is in use, the transcriber
+        # owns diarization, so that's where the hint must go.
+        if isinstance(transcriber, str):
+            if (
+                transcriber == "elevenlabs"
+                and num_speakers is not None
+                and isinstance(diarizer, str)
+                and diarizer
+                in {
+                    "builtin",
+                    "scribe",
+                    "scribe_builtin",
+                    "elevenlabs_builtin",
+                    "none",
+                }
+            ):
+                settings = get_settings()
+                self._transcriber: Transcriber = ElevenLabsTranscriber(
+                    num_speakers=num_speakers,
+                    timeout=settings.elevenlabs_timeout,
+                )
+            else:
+                self._transcriber = get_transcriber(transcriber)
+        else:
+            self._transcriber = transcriber
+
+        # Resolve diarizer with num_speakers hint where applicable.
+        if isinstance(diarizer, str):
+            if (
+                diarizer in {"pyannoteai", "pyannote_ai", "pyannoteai_api"}
+                and num_speakers is not None
+            ):
+                self._diarizer: Diarizer = PyannoteAIDiarizer(num_speakers=num_speakers)
+            elif (
+                diarizer in {"pyannote_local", "local"}
+                and num_speakers is not None
+            ):
+                self._diarizer = PyannoteLocalDiarizer(num_speakers=num_speakers)
+            else:
+                self._diarizer = get_diarizer(diarizer)
+        else:
+            self._diarizer = diarizer
+
         self._summarizer = (
             summarizer if not isinstance(summarizer, str) else get_summarizer(summarizer)
         )
         self.cleanup = cleanup
         self.name_resolution = name_resolution
+        self.num_speakers = num_speakers
         # Compose a precise backend label for the canonical Transcript.backend.
         self.name = (
             f"custom:{self._transcriber.name}+{self._diarizer.name}+{self._summarizer.name}"
@@ -68,14 +114,7 @@ class CustomPipeline:
         with _stage("transcribe", timings):
             transcript = self._transcriber.transcribe(processed, language=language)
 
-        with _stage("diarize", timings):
-            turns = self._diarizer.diarize(processed)
-
-        with _stage("align", timings):
-            words = [w for seg in transcript.segments for w in seg.words]
-            words_with_speakers = assign_speakers(words, turns)
-            segments = group_into_segments(words_with_speakers)
-            transcript = _replace_segments(transcript, segments, backend=self.name)
+        transcript = self._diarize_and_align(transcript, processed, timings)
 
         if self.name_resolution:
             with _stage("name_resolution", timings):
@@ -104,6 +143,7 @@ class CustomPipeline:
                 "audio_processed": str(processed),
                 "audio_bytes": meta.bytes_,
                 "name_resolution": self.name_resolution,
+                "num_speakers": self.num_speakers,
             },
         )
 
@@ -142,14 +182,7 @@ class CustomPipeline:
         with _stage("transcribe", timings):
             transcript = self._transcriber.transcribe(processed, language=language)
 
-        with _stage("diarize", timings):
-            turns = self._diarizer.diarize(processed)
-
-        with _stage("align", timings):
-            words = [w for seg in transcript.segments for w in seg.words]
-            words_with_speakers = assign_speakers(words, turns)
-            segments = group_into_segments(words_with_speakers)
-            transcript = _replace_segments(transcript, segments, backend=self.name)
+        transcript = self._diarize_and_align(transcript, processed, timings)
 
         # Write transcript outputs
         write_transcript(run_dir, transcript)
@@ -180,10 +213,51 @@ class CustomPipeline:
                 "transcriber": self._transcriber.name,
                 "audio_processed": str(processed),
                 "audio_bytes": meta.bytes_,
+                "num_speakers": self.num_speakers,
             },
         )
         write_meta(run_dir, run_meta)
 
+        return transcript
+
+    # ------------------------------------------------------------ internals
+
+    def _diarize_and_align(
+        self,
+        transcript: Transcript,
+        processed: Path,
+        timings: dict[str, float],
+    ) -> Transcript:
+        """Run the diarize + align stages (or short-circuit for builtin).
+
+        When the selected diarizer is :class:`BuiltinDiarizer` the transcriber
+        has already produced speaker labels (e.g. ElevenLabs Scribe v2's
+        native diarization). In that case we skip the external diarization
+        call and trust the existing labels, only updating ``transcript.backend``
+        so the composed backend label is still recorded.
+        """
+        if self._diarizer.name == "builtin":
+            with _stage("diarize", timings):
+                pass  # no-op; transcriber already diarized
+            with _stage("align", timings):
+                if not transcript.speakers:
+                    raise RuntimeError(
+                        "Diarizer 'builtin' was selected but the transcript "
+                        f"from {self._transcriber.name!r} has no speaker labels. "
+                        "Use a transcriber that diarizes natively (e.g. "
+                        "'elevenlabs') or select a different --diarizer."
+                    )
+                transcript = transcript.model_copy(update={"backend": self.name})
+            return transcript
+
+        with _stage("diarize", timings):
+            turns = self._diarizer.diarize(processed)
+
+        with _stage("align", timings):
+            words = [w for seg in transcript.segments for w in seg.words]
+            words_with_speakers = assign_speakers(words, turns)
+            segments = group_into_segments(words_with_speakers)
+            transcript = _replace_segments(transcript, segments, backend=self.name)
         return transcript
 
 
