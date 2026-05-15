@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     hf_token: str | None = Field(default=None, alias="HF_TOKEN")
 
     # Paths
-    audio_dir: Path = Field(default=REPO_ROOT / "Audio")
+    audio_dir: Path = Field(default=REPO_ROOT / "audio")
     transcription_dir: Path = Field(default=REPO_ROOT / "Transcription")
 
     # Timeouts (seconds)
